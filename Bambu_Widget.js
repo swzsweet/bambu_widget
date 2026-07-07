@@ -1,3 +1,9 @@
+// 版本号：用于和远程脚本对比、提示更新。修改脚本时请递增。
+const VERSION = "1.9.0";
+// 远程脚本地址（GitHub raw），检查更新时从这里拉取最新版本。
+const REMOTE_SCRIPT_URL =
+  "https://raw.githubusercontent.com/swzsweet/bambu_widget/refs/heads/main/Bambu_Widget.js";
+
 const CONFIG = {
   REFRESH_MINUTES: 6,
   MAX_LOCAL_CACHE_AGE_MINUTES: 120,
@@ -95,6 +101,110 @@ function clearConnectionSettings() {
   });
 }
 
+// -------------------- 脚本自更新 --------------------
+
+// 解析脚本文本里的 `const VERSION = "x.y.z"`。
+function parseVersion(scriptText) {
+  const match = String(scriptText || "").match(/const\s+VERSION\s*=\s*["']([^"']+)["']/);
+  return match ? match[1] : null;
+}
+
+// 比较两个 semver：a>b 返回 1，a<b 返回 -1，相等返回 0。
+function compareVersions(a, b) {
+  const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i += 1) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da > db) return 1;
+    if (da < db) return -1;
+  }
+  return 0;
+}
+
+// 返回 {fm, path}：当前脚本文件路径，以及能读写它的 FileManager。
+// 脚本可能存在本地或 iCloud，需用对应的 FileManager 才能写入。
+function currentScriptTarget() {
+  const local = FileManager.local();
+  let path = null;
+  if (typeof module !== "undefined" && module.filename) {
+    path = module.filename;
+  } else {
+    path = local.joinPath(local.documentsDirectory(), `${Script.name()}.js`);
+  }
+
+  // 判断该路径属于本地还是 iCloud 存储。
+  let fm = local;
+  try {
+    const iCloud = FileManager.iCloud();
+    if (path.startsWith(iCloud.documentsDirectory())) fm = iCloud;
+  } catch (_) {
+    // iCloud 不可用时用本地。
+  }
+  return { fm, path };
+}
+
+async function fetchRemoteScript() {
+  const req = new Request(REMOTE_SCRIPT_URL);
+  req.method = "GET";
+  req.headers = { "Cache-Control": "no-cache" };
+  req.timeoutInterval = 20;
+  const text = await req.loadString();
+  const statusCode = req.response?.statusCode || 0;
+  if (statusCode < 200 || statusCode >= 300) {
+    throw new Error(`下载失败：HTTP ${statusCode}`);
+  }
+  if (!text || !text.includes("VERSION")) {
+    throw new Error("远程脚本内容异常。");
+  }
+  return text;
+}
+
+// 检查更新；silent=true 时无更新不弹窗（用于自动检查）。
+async function checkForUpdate(silent = false) {
+  let remoteText;
+  try {
+    remoteText = await fetchRemoteScript();
+  } catch (error) {
+    if (!silent) await showMessage("检查更新失败", error.message || String(error));
+    return false;
+  }
+
+  const remoteVersion = parseVersion(remoteText);
+  if (!remoteVersion) {
+    if (!silent) await showMessage("检查更新失败", "无法解析远程版本号。");
+    return false;
+  }
+
+  const cmp = compareVersions(remoteVersion, VERSION);
+  if (cmp <= 0) {
+    if (!silent) {
+      await showMessage("已是最新版本", `当前版本 ${VERSION} 已是最新。`);
+    }
+    return false;
+  }
+
+  // 有新版本，确认后写入。
+  const confirm = new Alert();
+  confirm.title = "发现新版本";
+  confirm.message = `当前 ${VERSION}，最新 ${remoteVersion}。\n更新后请重新运行脚本以生效。`;
+  confirm.addAction("立即更新");
+  confirm.addCancelAction("暂不更新");
+  const choice = await confirm.presentAlert();
+  if (choice === -1) return false;
+
+  try {
+    const { fm, path } = currentScriptTarget();
+    fm.writeString(path, remoteText);
+    await showMessage("更新完成", `已更新到 ${remoteVersion}。\n请重新运行脚本以应用新版本。`);
+    return true;
+  } catch (error) {
+    await showMessage("更新失败", error.message || String(error));
+    return false;
+  }
+}
+
 async function showAppMenu() {
   const saved = getSavedConfig();
 
@@ -105,9 +215,10 @@ async function showAppMenu() {
 
   const menu = new Alert();
   menu.title = "Bambu Widget";
-  menu.message = "连接配置已保存在本机 Keychain。";
+  menu.message = `连接配置已保存在本机 Keychain。\n当前版本 ${VERSION}`;
   menu.addAction("预览小组件");
   menu.addAction("清除缓存并刷新");
+  menu.addAction("检查更新");
   menu.addAction("修改连接设置");
   menu.addDestructiveAction("清除连接设置");
   menu.addCancelAction("关闭");
@@ -120,10 +231,14 @@ async function showAppMenu() {
     return "refresh";
   }
   if (result === 2) {
+    await checkForUpdate(false);
+    return "close";
+  }
+  if (result === 3) {
     const didSave = await editConnectionSettings();
     return didSave ? "preview" : "close";
   }
-  if (result === 3) {
+  if (result === 4) {
     clearConnectionSettings();
     await showMessage("已清除", "Worker 地址和 Access Token 已从本机删除。");
   }
@@ -638,49 +753,49 @@ function drawSmallRingImage(payload, state) {
   const pValue = Math.max(0, Math.min(100, numberOrNull(status.progress) ?? 0));
   drawRing(ctx, cx, cy, radius, lineWidth, trackColor, green, pValue / 100);
 
-  // ---- center: big percent (number + smaller %) ----
+  // ---- center: 预计完成时间(上) / 大百分比(中) / 状态(下) ----
+  // 预计完成时间
+  if (!state.finished) {
+    const etaText = `预计${estimateFinishTime(payload.__updateAt, status.remainingMinutes)}完成`;
+    ctx.setFont(Font.systemFont(15));
+    ctx.setTextColor(gray);
+    ctx.setTextAlignedCenter();
+    ctx.drawTextInRect(etaText, new Rect(cx - 100, cy - 62, 200, 22));
+  }
+
+  // 大百分比：数字 + 紧邻的小号 %
   const pText = numberOrNull(status.progress) === null ? "--" : String(Math.round(pValue));
-  const pctW = 20;
-  const gap = 2;
-  // Anchor the number+% group so it reads centered: right-align the number to
-  // just left of the anchor, put "%" right after it. Independent of digit width.
+  const pctW = 22;
   const anchorX = cx + pctW / 2 + 1;
   ctx.setFont(Font.boldSystemFont(52));
   ctx.setTextColor(dark);
   ctx.setTextAlignedRight();
-  ctx.drawTextInRect(pText, new Rect(anchorX - 140, cy - 40, 140, 62));
-  ctx.setFont(Font.boldSystemFont(20));
+  ctx.drawTextInRect(pText, new Rect(anchorX - 150, cy - 38, 150, 62));
+  ctx.setFont(Font.boldSystemFont(22));
   ctx.setTextColor(gray);
   ctx.setTextAlignedLeft();
-  ctx.drawTextInRect("%", new Rect(anchorX + gap, cy - 12, pctW + 6, 28));
+  ctx.drawTextInRect("%", new Rect(anchorX + 2, cy - 8, pctW + 8, 30));
 
-  // state dot + label (centered group)
-  drawStateLine(ctx, cx, cy + 20, state.title || "", state.textColor);
+  // 状态圆点 + 文字
+  drawStateLine(ctx, cx, cy + 30, state.title || "", state.textColor);
 
-  if (!state.finished) {
-    const remainText = `剩余 ${formatRemaining(status.remainingMinutes)}`;
-    ctx.setFont(Font.systemFont(14));
-    ctx.setTextColor(gray);
-    ctx.setTextAlignedCenter();
-    ctx.drawTextInRect(remainText, new Rect(cx - 90, cy + 44, 180, 20));
-  }
-
-  // ---- four corners ----
-  const pad = 26;
+  // ---- four corners (贴环斜角，文字水平) ----
   // top-left: nozzle
-  drawCorner(ctx, pad, pad, "喷嘴", formatTempShort(status.nozzleTemp), orange, "left");
+  drawCornerStat(ctx, 44, 60, "left", "喷嘴", formatTempShort(status.nozzleTemp), orange);
   // top-right: bed
-  drawCorner(ctx, S - pad, pad, "热床", formatTempShort(status.bedTemp), blue, "right");
-  // bottom-left: layers
-  drawCorner(
-    ctx, pad, S - pad - 40,
-    "层数",
-    `${formatInteger(status.currentLayer)}`,
-    dark, "left",
+  drawCornerStat(ctx, S - 44, 60, "right", "热床", formatTempShort(status.bedTemp), blue);
+  // bottom-left: layers (value + faint total)
+  drawCornerStat(
+    ctx, 44, S - 74, "left", "层数",
+    formatInteger(status.currentLayer), dark,
     `/${formatInteger(status.totalLayers)}`
   );
-  // bottom-right: speed
-  drawCorner(ctx, S - pad, S - pad - 40, "速度", formatSpeedShort(status.speedPercent, status.speedLevel), green, "right");
+  // bottom-right: speed (percent + mode label)
+  drawCornerStat(
+    ctx, S - 44, S - 74, "right", "速度",
+    formatPercent(status.speedPercent), green,
+    speedModeText(status.speedLevel)
+  );
 
   return ctx.getImage();
 }
@@ -771,32 +886,47 @@ function drawStateLine(ctx, cx, y, label, color) {
   ctx.drawTextInRect(label, new Rect(startX + dot + dotGap, y - 3, labelW + 8, 22));
 }
 
-function drawCorner(ctx, x, y, label, value, valueColor, align, faint) {
-  const labelFont = Font.mediumSystemFont(14);
-  const valueFont = Font.boldSystemFont(22);
+// Corner stat: small gray label on top, larger colored value below, with an
+// optional faint suffix (total layers, speed mode). `x` is the outer anchor;
+// left-aligned for the two left corners, right-aligned for the right corners.
+function drawCornerStat(ctx, x, y, align, label, value, valueColor, faint) {
   const labelColor = new Color("#8A939C");
-  const w = 120;
+  const faintColor = new Color("#C7CDD3");
+  const w = 130;
+  const valueSize = 24;
 
-  ctx.setFont(labelFont);
-  ctx.setTextColor(labelColor);
   if (align === "left") {
+    ctx.setFont(Font.mediumSystemFont(14));
+    ctx.setTextColor(labelColor);
     ctx.setTextAlignedLeft();
     ctx.drawTextInRect(label, new Rect(x, y, w, 18));
-    ctx.setFont(valueFont);
+
+    ctx.setFont(Font.boldSystemFont(valueSize));
     ctx.setTextColor(valueColor);
-    ctx.drawTextInRect(value, new Rect(x, y + 18, w, 26));
+    ctx.drawTextInRect(value, new Rect(x, y + 18, w, 30));
+
     if (faint) {
+      const vw = measureWidth(value, valueSize) + 4;
       ctx.setFont(Font.mediumSystemFont(13));
-      ctx.setTextColor(new Color("#C7CDD3"));
-      const vw = measureWidth(value, 22) + 3;
+      ctx.setTextColor(faintColor);
       ctx.drawTextInRect(faint, new Rect(x + vw, y + 26, w, 20));
     }
   } else {
+    ctx.setFont(Font.mediumSystemFont(14));
+    ctx.setTextColor(labelColor);
     ctx.setTextAlignedRight();
     ctx.drawTextInRect(label, new Rect(x - w, y, w, 18));
-    ctx.setFont(valueFont);
+
+    ctx.setFont(Font.boldSystemFont(valueSize));
     ctx.setTextColor(valueColor);
-    ctx.drawTextInRect(value, new Rect(x - w, y + 18, w, 26));
+    ctx.drawTextInRect(value, new Rect(x - w, y + 18, w, 30));
+
+    if (faint) {
+      const vw = measureWidth(value, valueSize) + 4;
+      ctx.setFont(Font.mediumSystemFont(13));
+      ctx.setTextColor(faintColor);
+      ctx.drawTextInRect(faint, new Rect(x - w, y + 26, w - vw, 20));
+    }
   }
 }
 
@@ -810,6 +940,10 @@ function buildSmallWidget(payload, options = {}) {
   widget.refreshAfterDate = new Date(
     Date.now() + Math.max(5, CONFIG.REFRESH_MINUTES) * 60 * 1000
   );
+
+  payload.__updateAt = options.fromCache
+    ? options.cacheSavedAt
+    : (payload.fetchedAt || status.updatedAt);
 
   const image = drawSmallRingImage(payload, state);
   widget.backgroundImage = image;
