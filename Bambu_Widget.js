@@ -205,12 +205,16 @@ async function fetchStatus(options = {}) {
   const json = await req.loadJSON();
   const statusCode = req.response?.statusCode || 0;
 
-  if (statusCode < 200 || statusCode >= 300) {
-    throw new Error(`HTTP ${statusCode}`);
+  // The Worker returns {ok:false, error, message} even on 4xx/5xx, so surface
+  // that detail instead of a bare status code.
+  if (!json?.ok) {
+    const detail = json?.message || json?.error;
+    if (detail) throw new Error(detail);
+    throw new Error(statusCode ? `HTTP ${statusCode}` : "接口未返回打印机状态");
   }
 
-  if (!json?.ok) {
-    throw new Error(json?.message || json?.error || "接口未返回打印机状态");
+  if (statusCode < 200 || statusCode >= 300) {
+    throw new Error(`HTTP ${statusCode}`);
   }
 
   const payload = normalizeWorkerPayload(json);

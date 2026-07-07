@@ -6,6 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 # Region is a non-secret env var; change it here (Global uses api.bambulab.com /
 # us.mqtt.bambulab.com, China uses api.bambulab.cn / cn.mqtt.bambulab.com).
+BAMBU_REGION = "China"
 
 # Set secrets with `npx wrangler secret put ...` instead of committing them here.
 # Only BAMBU_ACCESS_TOKEN is required; serial and MQTT username are auto-derived.
