@@ -1,14 +1,3 @@
-// Bambu Lab × Scriptable Widget
-// 左右布局白色风格版 v1.8
-// 修改：
-// 1) 鉴权改为拓竹 Access Token，随请求头 X-Bambu-Token 发送
-//    （Worker 不再使用 API_KEY，也不存储 token）
-// 2) 设置界面与 Keychain 键名同步更新为 Access Token
-//
-// 历史 v1.7：
-// - 优化左侧百分比与进度条比例；% 符号缩小
-// - 预计完成时间改为绿色胶囊样式；更新时间显示 HH:mm
-
 const CONFIG = {
   REFRESH_MINUTES: 6,
   MAX_LOCAL_CACHE_AGE_MINUTES: 120,
