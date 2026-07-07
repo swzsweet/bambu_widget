@@ -1,5 +1,5 @@
 // 版本号：用于和远程脚本对比、提示更新。修改脚本时请递增。
-const VERSION = "1.9.0";
+const VERSION = "1.9.1";
 // 远程脚本地址（GitHub raw），检查更新时从这里拉取最新版本。
 const REMOTE_SCRIPT_URL =
   "https://raw.githubusercontent.com/swzsweet/bambu_widget/refs/heads/main/Bambu_Widget.js";
@@ -742,57 +742,53 @@ function drawSmallRingImage(payload, state) {
   const trackColor = new Color("#E4F3E9");
   const dark = new Color("#1F2937");
   const gray = new Color("#AEB6BF");
-  const orange = new Color("#FF7A00");
-  const blue = new Color("#F0A500");
+  const nozzleColor = new Color("#FF5A3C"); // 喷嘴：偏红
+  const bedColor = new Color("#F0A500");    // 热床：琥珀色
 
-  // ---- progress ring ----
+  // ---- progress ring（缩小半径，给四角留出空间，避免文字压到环上）----
   const cx = S / 2;
-  const cy = S / 2 + 4;
-  const radius = 98;
+  const cy = S / 2;
+  const radius = 78;
   const lineWidth = 12;
   const pValue = Math.max(0, Math.min(100, numberOrNull(status.progress) ?? 0));
   drawRing(ctx, cx, cy, radius, lineWidth, trackColor, green, pValue / 100);
 
   // ---- center: 预计完成时间(上) / 大百分比(中) / 状态(下) ----
-  // 预计完成时间
   if (!state.finished) {
     const etaText = `预计${estimateFinishTime(payload.__updateAt, status.remainingMinutes)}完成`;
-    ctx.setFont(Font.systemFont(15));
+    ctx.setFont(Font.systemFont(13));
     ctx.setTextColor(gray);
     ctx.setTextAlignedCenter();
-    ctx.drawTextInRect(etaText, new Rect(cx - 100, cy - 62, 200, 22));
+    ctx.drawTextInRect(etaText, new Rect(cx - 90, cy - 46, 180, 18));
   }
 
-  // 大百分比：数字 + 紧邻的小号 %
   const pText = numberOrNull(status.progress) === null ? "--" : String(Math.round(pValue));
-  const pctW = 22;
+  const pctW = 20;
   const anchorX = cx + pctW / 2 + 1;
-  ctx.setFont(Font.boldSystemFont(52));
+  ctx.setFont(Font.boldSystemFont(46));
   ctx.setTextColor(dark);
   ctx.setTextAlignedRight();
-  ctx.drawTextInRect(pText, new Rect(anchorX - 150, cy - 38, 150, 62));
-  ctx.setFont(Font.boldSystemFont(22));
+  ctx.drawTextInRect(pText, new Rect(anchorX - 150, cy - 30, 150, 54));
+  ctx.setFont(Font.boldSystemFont(19));
   ctx.setTextColor(gray);
   ctx.setTextAlignedLeft();
-  ctx.drawTextInRect("%", new Rect(anchorX + 2, cy - 8, pctW + 8, 30));
+  ctx.drawTextInRect("%", new Rect(anchorX + 2, cy - 4, pctW + 8, 26));
 
-  // 状态圆点 + 文字
-  drawStateLine(ctx, cx, cy + 30, state.title || "", state.textColor);
+  drawStateLine(ctx, cx, cy + 26, state.title || "", state.textColor);
 
-  // ---- four corners (贴环斜角，文字水平) ----
-  // top-left: nozzle
-  drawCornerStat(ctx, 44, 60, "left", "喷嘴", formatTempShort(status.nozzleTemp), orange);
-  // top-right: bed
-  drawCornerStat(ctx, S - 44, 60, "right", "热床", formatTempShort(status.bedTemp), blue);
-  // bottom-left: layers (value + faint total)
+  // ---- four corners（固定在四角，留足内边距，远离圆环）----
+  const padX = 18;
+  const topY = 20;
+  const botY = S - 62;
+  drawCornerStat(ctx, padX, topY, "left", "喷嘴", formatTempShort(status.nozzleTemp), nozzleColor);
+  drawCornerStat(ctx, S - padX, topY, "right", "热床", formatTempShort(status.bedTemp), bedColor);
   drawCornerStat(
-    ctx, 44, S - 74, "left", "层数",
+    ctx, padX, botY, "left", "层数",
     formatInteger(status.currentLayer), dark,
     `/${formatInteger(status.totalLayers)}`
   );
-  // bottom-right: speed (percent + mode label)
   drawCornerStat(
-    ctx, S - 44, S - 74, "right", "速度",
+    ctx, S - padX, botY, "right", "速度",
     formatPercent(status.speedPercent), green,
     speedModeText(status.speedLevel)
   );
@@ -837,13 +833,13 @@ function drawPercentRingImage(progress, size = 200) {
 
 function drawRing(ctx, cx, cy, radius, lineWidth, trackColor, fillColor, fraction) {
   // Track (full circle)
-  const steps = 180;
+  const steps = 220;
   ctx.setLineWidth(lineWidth);
   strokeArc(ctx, cx, cy, radius, -90, 270, trackColor, lineWidth, steps);
   // Fill (from top clockwise)
   const endAngle = -90 + 360 * Math.max(0, Math.min(1, fraction));
   if (fraction > 0) {
-    strokeArc(ctx, cx, cy, radius, -90, endAngle, fillColor, lineWidth, Math.max(2, Math.round(steps * fraction)));
+    strokeArc(ctx, cx, cy, radius, -90, endAngle, fillColor, lineWidth, Math.max(4, Math.round(steps * fraction)));
   }
 }
 
@@ -872,9 +868,9 @@ function measureWidth(text, size) {
 
 function drawStateLine(ctx, cx, y, label, color) {
   // dot + label, centered as a group
-  const fontSize = 15;
-  const dot = 8;
-  const dotGap = 6;
+  const fontSize = 14;
+  const dot = 7;
+  const dotGap = 5;
   const labelW = measureWidth(label, fontSize);
   const groupW = dot + dotGap + labelW;
   const startX = cx - groupW / 2;
@@ -883,7 +879,7 @@ function drawStateLine(ctx, cx, y, label, color) {
   ctx.setFont(Font.semiboldSystemFont(fontSize));
   ctx.setTextColor(color);
   ctx.setTextAlignedLeft();
-  ctx.drawTextInRect(label, new Rect(startX + dot + dotGap, y - 3, labelW + 8, 22));
+  ctx.drawTextInRect(label, new Rect(startX + dot + dotGap, y, labelW + 10, 20));
 }
 
 // Corner stat: small gray label on top, larger colored value below, with an
@@ -892,40 +888,39 @@ function drawStateLine(ctx, cx, y, label, color) {
 function drawCornerStat(ctx, x, y, align, label, value, valueColor, faint) {
   const labelColor = new Color("#8A939C");
   const faintColor = new Color("#C7CDD3");
-  const w = 130;
-  const valueSize = 24;
+  const w = 120;
+  const valueSize = 20;
 
+  ctx.setFont(Font.mediumSystemFont(12));
+  ctx.setTextColor(labelColor);
   if (align === "left") {
-    ctx.setFont(Font.mediumSystemFont(14));
-    ctx.setTextColor(labelColor);
     ctx.setTextAlignedLeft();
-    ctx.drawTextInRect(label, new Rect(x, y, w, 18));
+    ctx.drawTextInRect(label, new Rect(x, y, w, 16));
 
     ctx.setFont(Font.boldSystemFont(valueSize));
     ctx.setTextColor(valueColor);
-    ctx.drawTextInRect(value, new Rect(x, y + 18, w, 30));
+    ctx.drawTextInRect(value, new Rect(x, y + 16, w, 26));
 
     if (faint) {
-      const vw = measureWidth(value, valueSize) + 4;
-      ctx.setFont(Font.mediumSystemFont(13));
+      const vw = measureWidth(value, valueSize) + 3;
+      ctx.setFont(Font.mediumSystemFont(12));
       ctx.setTextColor(faintColor);
-      ctx.drawTextInRect(faint, new Rect(x + vw, y + 26, w, 20));
+      ctx.drawTextInRect(faint, new Rect(x + vw, y + 22, w, 18));
     }
   } else {
-    ctx.setFont(Font.mediumSystemFont(14));
-    ctx.setTextColor(labelColor);
     ctx.setTextAlignedRight();
-    ctx.drawTextInRect(label, new Rect(x - w, y, w, 18));
+    ctx.drawTextInRect(label, new Rect(x - w, y, w, 16));
 
     ctx.setFont(Font.boldSystemFont(valueSize));
     ctx.setTextColor(valueColor);
-    ctx.drawTextInRect(value, new Rect(x - w, y + 18, w, 30));
+    ctx.drawTextInRect(value, new Rect(x - w, y + 16, w, 26));
 
     if (faint) {
-      const vw = measureWidth(value, valueSize) + 4;
-      ctx.setFont(Font.mediumSystemFont(13));
+      ctx.setFont(Font.mediumSystemFont(12));
       ctx.setTextColor(faintColor);
-      ctx.drawTextInRect(faint, new Rect(x - w, y + 26, w - vw, 20));
+      ctx.setTextAlignedRight();
+      const vw = measureWidth(value, valueSize) + 3;
+      ctx.drawTextInRect(faint, new Rect(x - w, y + 22, w - vw, 18));
     }
   }
 }

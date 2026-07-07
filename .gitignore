@@ -3,3 +3,5 @@
 .wrangler-dry-run/
 .dev.vars
 .DS_Store
+tools/
+*.png
