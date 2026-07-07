@@ -272,7 +272,7 @@ function numberOrNull(value) {
 function formatTemperature(value) {
   const n = numberOrNull(value);
   if (n === null) return "--";
-  return `${n.toFixed(1)}°C`;
+  return `${Math.round(n)}°C`;
 }
 
 function formatPercent(value) {
@@ -329,7 +329,7 @@ function stateInfo(rawState) {
     RUNNING: { title: "打印中", textColor: green },
     PREPARE: { title: "准备中", textColor: green },
     PAUSE:   { title: "已暂停", textColor: orange },
-    FINISH:  { title: "打印完成", textColor: green },
+    FINISH:  { title: "成功", textColor: green, finished: true },
     FAILED:  { title: "打印失败", textColor: red },
     IDLE:    { title: "空闲", textColor: grayText },
   };
@@ -372,6 +372,7 @@ function addProgressBar(parent, progress, width, height = 10) {
 
   const track = parent.addStack();
   track.size = new Size(width, height);
+  track.setPadding(0, 0, 0, 0);
   track.backgroundColor = new Color("#E6ECE7");
   track.cornerRadius = height / 2;
 
@@ -381,7 +382,7 @@ function addProgressBar(parent, progress, width, height = 10) {
   fill.backgroundColor = new Color(CONFIG.THEME_GREEN);
   fill.cornerRadius = height / 2;
 
-  track.addSpacer();
+  if (fillWidth < width) track.addSpacer();
   return track;
 }
 
@@ -548,12 +549,14 @@ function buildMediumWidget(payload, options = {}) {
 
   left.addSpacer(12);
 
-  // 更醒目的预计完成时间
+  // 更醒目的预计完成时间（打印成功后隐藏）
   const etaRow = left.addStack();
   etaRow.size = new Size(114, 24);
   etaRow.centerAlignContent();
   etaRow.addSpacer();
-  addEtaPill(etaRow, estimateFinishTime(updateAt, status.remainingMinutes));
+  if (!state.finished) {
+    addEtaPill(etaRow, estimateFinishTime(updateAt, status.remainingMinutes));
+  }
   etaRow.addSpacer();
 
   left.addSpacer();
@@ -636,8 +639,8 @@ function buildMediumWidget(payload, options = {}) {
     icon: "bolt.fill",
     iconColor: new Color("#FF8A1D"),
     label: "打印速度",
-    value: formatPercent(status.speedPercent),
-    subtitle: speedModeText(status.speedLevel),
+    value: speedModeText(status.speedLevel),
+    subtitle: formatPercent(status.speedPercent),
   });
 
   return widget;
@@ -661,9 +664,12 @@ function buildSmallWidget(payload, options = {}) {
 
   const titleRow = widget.addStack();
   titleRow.centerAlignContent();
-  addText(titleRow, printer.name || CONFIG.WIDGET_TITLE_FALLBACK, 14, new Color("#111827"), "bold");
+  const smallName = addText(titleRow, printer.name || CONFIG.WIDGET_TITLE_FALLBACK, 14, new Color("#111827"), "bold");
+  smallName.lineLimit = 1;
+  smallName.minimumScaleFactor = 0.7;
   titleRow.addSpacer(5);
-  addText(titleRow, state.title, 10, state.textColor, "semibold");
+  const smallState = addText(titleRow, state.title, 10, state.textColor, "semibold");
+  smallState.lineLimit = 1;
 
   widget.addSpacer(10);
 
@@ -701,12 +707,14 @@ function buildSmallWidget(payload, options = {}) {
   addProgressBar(barWrap, status.progress, 136, 10);
   barWrap.addSpacer();
 
-  widget.addSpacer(10);
+  if (!state.finished) {
+    widget.addSpacer(10);
 
-  const etaWrap = widget.addStack();
-  etaWrap.addSpacer();
-  addEtaPill(etaWrap, estimateFinishTime(updateAt, status.remainingMinutes));
-  etaWrap.addSpacer();
+    const etaWrap = widget.addStack();
+    etaWrap.addSpacer();
+    addEtaPill(etaWrap, estimateFinishTime(updateAt, status.remainingMinutes));
+    etaWrap.addSpacer();
+  }
 
   widget.addSpacer();
 

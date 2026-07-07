@@ -167,7 +167,7 @@ async function fetchPrinterSnapshot(config, includeRaw) {
       throw mqttError("MQTT_TIMEOUT", "Timed out before receiving a printer report packet.", 504);
     }
 
-    const normalized = normalizePrinterStatus(latestPrint || {}, latestInfo || {});
+    const normalized = normalizePrinterStatus(latestPrint || {}, latestInfo || {}, config.deviceName);
     const snapshot = {
       ok: true,
       fetchedAt: new Date().toISOString(),
@@ -209,10 +209,18 @@ async function readConfig(env, url, token) {
   // the serial, to avoid an extra round-trip when it is configured explicitly.
   const configuredSerial = (env.BAMBU_SERIAL || url.searchParams.get("serial") || "").trim();
   const username = await resolveMqttUsername(env, password, apiBase);
-  const serial = configuredSerial || await resolveSerial(apiBase, password, url);
+
+  let serial = configuredSerial;
+  let deviceName = null;
+  if (!serial) {
+    const chosen = await resolveDevice(apiBase, password, url);
+    serial = chosen.serial;
+    deviceName = chosen.name;
+  }
 
   return {
     serial,
+    deviceName,
     username,
     password,
     host,
@@ -236,10 +244,10 @@ async function resolveMqttUsername(env, token, apiBase) {
   throw configError("Unable to derive Bambu MQTT username from BAMBU_ACCESS_TOKEN. The token may be expired, invalid, or for the wrong BAMBU_REGION.");
 }
 
-// Resolve the printer serial from the account's bound device list when it is
-// not configured. Picks a device matching ?serial=/?name= if given, otherwise
+// Resolve the printer (serial + name) from the account's bound device list when
+// no serial is configured. Picks a device matching ?name= if given, otherwise
 // prefers an online printer, else the first bound device.
-async function resolveSerial(apiBase, token, url) {
+async function resolveDevice(apiBase, token, url) {
   const devices = await fetchDevicesFromBambuCloud(apiBase, token);
   if (!devices.length) {
     throw configError("No printers are bound to this Bambu account. Set BAMBU_SERIAL explicitly.");
@@ -254,7 +262,7 @@ async function resolveSerial(apiBase, token, url) {
   if (!serial) {
     throw configError("Bound device did not include a serial (dev_id). Set BAMBU_SERIAL explicitly.");
   }
-  return serial;
+  return { serial, name: chosen.name || null };
 }
 
 function defaultMqttHost(region) {
@@ -501,7 +509,7 @@ function concatBytes(...parts) {
   return out;
 }
 
-function normalizePrinterStatus(print, info) {
+function normalizePrinterStatus(print, info, fallbackName = null) {
   const temperatures = {
     nozzle: temperaturePair(print.nozzle_temper, print.nozzle_target_temper),
     bed: temperaturePair(print.bed_temper, print.bed_target_temper),
@@ -509,7 +517,7 @@ function normalizePrinterStatus(print, info) {
   };
 
   return {
-    name: print.dev_name || info.dev_name || null,
+    name: print.dev_name || info.dev_name || fallbackName || null,
     online: true,
     state: print.gcode_state || print.print_status || null,
     stateLabel: stateLabel(print.gcode_state || print.print_status),
