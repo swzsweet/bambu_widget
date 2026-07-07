@@ -10,15 +10,23 @@ for a fresh status snapshot, and exposes a small HTTP JSON endpoint for Scriptab
 - `GET /status?raw=1` - include raw `print` / `info` MQTT payloads for debugging.
 - `GET /status?name=<printer name>` - when the account has several printers, pick one by name.
 - `GET /devices` - list the printers bound to the account (name, serial, online, model). Does not connect to MQTT.
-- `GET /health` - simple health check that does not connect to MQTT.
+- `GET /health` - simple health check; the only endpoint that needs no token.
 
-## Required configuration
+All endpoints except `/health` require the access token (see Authentication).
 
-Set this as a Worker secret — the access token is all you need:
+## Authentication
 
-```bash
-npx wrangler secret put BAMBU_ACCESS_TOKEN
+The **Bambu access token is the credential**, supplied by the caller on every
+request — the Worker stores nothing sensitive. A request without a token gets
+`401`, so only someone holding a valid token can read the printer.
+
+Send the token in a request header (preferred, keeps it out of URLs and logs):
+
+```http
+X-Bambu-Token: <access token>
 ```
+
+`Authorization: Bearer <access token>` is also accepted.
 
 From the token alone the Worker automatically derives:
 
@@ -26,32 +34,23 @@ From the token alone the Worker automatically derives:
   back to the Bambu cloud user-preference API; and
 - the **printer serial**, from the account's bound-device list (`/devices`). If the
   account has more than one printer it prefers an online one; pin a specific printer
-  with `BAMBU_SERIAL` or `?name=`.
+  with `?serial=`, `?name=`, or the `BAMBU_SERIAL` variable.
 
-Optional overrides (only needed if auto-derivation does not fit your setup):
+### Optional server-stored token
 
-```bash
-npx wrangler secret put BAMBU_SERIAL     # pin a specific printer serial
-npx wrangler secret put BAMBU_USERNAME   # full MQTT username, usually u_<user_id>
-npx wrangler secret put BAMBU_USER_ID    # numeric user id; converted to u_<user_id>
-```
-
-Recommended optional secret:
+For local testing you may still set a token on the Worker; it is used only when a
+request carries none. Leave it unset in production so the token stays client-side.
 
 ```bash
-npx wrangler secret put API_KEY
+npx wrangler secret put BAMBU_ACCESS_TOKEN   # optional fallback only
 ```
 
-When `API_KEY` is set, requests must include either:
+Optional non-secret overrides (in `wrangler.toml` `[vars]` or as secrets):
 
-```http
-Authorization: Bearer <API_KEY>
 ```
-
-or:
-
-```http
-x-api-key: <API_KEY>
+BAMBU_SERIAL     # pin a specific printer serial
+BAMBU_USERNAME   # full MQTT username, usually u_<user_id>
+BAMBU_USER_ID    # numeric user id; converted to u_<user_id>
 ```
 
 ## Optional variables

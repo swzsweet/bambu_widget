@@ -44,15 +44,23 @@ export default {
       return json({ ok: false, error: "NOT_FOUND" }, 404);
     }
 
-    const authError = validateApiKey(request, env, url);
-    if (authError) return authError;
+    // The Bambu access token is the credential: the caller (e.g. Scriptable)
+    // supplies it per request. Nothing sensitive is stored in the Worker.
+    const token = tokenFromRequest(request, env);
+    if (!token) {
+      return json({
+        ok: false,
+        error: "MISSING_TOKEN",
+        message: "Provide the Bambu access token via the X-Bambu-Token header (or Authorization: Bearer <token>).",
+      }, 401);
+    }
 
     if (url.pathname === "/devices") {
-      return handleDevices(env, url);
+      return handleDevices(env, url, token);
     }
 
     try {
-      const config = await readConfig(env, url);
+      const config = await readConfig(env, url, token);
       const useCache = Number(config.cacheTtlSeconds) > 0 && url.searchParams.get("force") !== "1";
       const includeRaw = url.searchParams.get("raw") === "1";
       const cacheKey = new Request(`https://bambu-widget-worker.local/status/${config.serial}?raw=${includeRaw}`);
@@ -82,12 +90,8 @@ export default {
 
 // GET /devices — list the printers bound to the account, so callers can pick a
 // serial (dev_id) without connecting to MQTT.
-async function handleDevices(env, url) {
+async function handleDevices(env, url, token) {
   try {
-    const token = normalizeAccessToken(env.BAMBU_ACCESS_TOKEN || env.BAMBU_AUTH_TOKEN || "");
-    if (!token) {
-      throw configError("Missing BAMBU_ACCESS_TOKEN or BAMBU_AUTH_TOKEN.");
-    }
     const region = (env.BAMBU_REGION || "Global").trim().toLowerCase();
     const apiBase = (env.BAMBU_API_BASE || defaultApiBase(region)).trim().replace(/\/+$/, "");
 
@@ -191,12 +195,8 @@ async function fetchPrinterSnapshot(config, includeRaw) {
   }
 }
 
-async function readConfig(env, url) {
-  const password = normalizeAccessToken(env.BAMBU_ACCESS_TOKEN || env.BAMBU_AUTH_TOKEN || "");
-  if (!password) {
-    throw configError("Missing BAMBU_ACCESS_TOKEN or BAMBU_AUTH_TOKEN. Set it to the raw Bambu accessToken value.");
-  }
-
+async function readConfig(env, url, token) {
+  const password = token;
   const region = (env.BAMBU_REGION || "Global").trim().toLowerCase();
   const apiBase = (env.BAMBU_API_BASE || defaultApiBase(region)).trim().replace(/\/+$/, "");
   const host = (env.BAMBU_MQTT_HOST || defaultMqttHost(region)).trim();
@@ -283,15 +283,15 @@ function configError(message) {
   return mqttError("CONFIG_ERROR", message, 500);
 }
 
-function validateApiKey(request, env, url) {
-  if (!env.API_KEY) return null;
-
-  const headerValue = request.headers.get("authorization") || "";
-  const bearer = headerValue.toLowerCase().startsWith("bearer ") ? headerValue.slice(7).trim() : "";
-  const key = request.headers.get("x-api-key") || bearer || url.searchParams.get("key");
-  if (key === env.API_KEY) return null;
-
-  return json({ ok: false, error: "UNAUTHORIZED" }, 401);
+// Read the Bambu access token from the request. Prefer the dedicated header,
+// then Authorization: Bearer. Falls back to a Worker-stored token only if one
+// is set (kept for backward compatibility / local testing).
+function tokenFromRequest(request, env) {
+  const explicit = request.headers.get("x-bambu-token") || "";
+  const authValue = request.headers.get("authorization") || "";
+  const bearer = authValue.toLowerCase().startsWith("bearer ") ? authValue.slice(7) : "";
+  const fromEnv = env.BAMBU_ACCESS_TOKEN || env.BAMBU_AUTH_TOKEN || "";
+  return normalizeAccessToken(explicit || bearer || fromEnv);
 }
 
 class MinimalMqttClient {

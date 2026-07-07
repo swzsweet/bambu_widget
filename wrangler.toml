@@ -4,9 +4,11 @@ compatibility_date = "2026-07-07"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
+# Region is a non-secret env var; change it here (Global uses api.bambulab.com /
+# us.mqtt.bambulab.com, China uses api.bambulab.cn / cn.mqtt.bambulab.com).
+
 # Set secrets with `npx wrangler secret put ...` instead of committing them here.
 # Only BAMBU_ACCESS_TOKEN is required; serial and MQTT username are auto-derived.
 # BAMBU_SERIAL = "YOUR_PRINTER_SERIAL" # optional: pin a specific printer
-# BAMBU_REGION = "Global" # Global uses us.mqtt.bambulab.com; China uses cn.mqtt.bambulab.com
 # CACHE_TTL_SECONDS = "20"
 # REQUEST_TIMEOUT_MS = "10000"
