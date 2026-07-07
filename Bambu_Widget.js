@@ -107,6 +107,7 @@ async function showAppMenu() {
   menu.title = "Bambu Widget";
   menu.message = "连接配置已保存在本机 Keychain。";
   menu.addAction("预览小组件");
+  menu.addAction("清除缓存并刷新");
   menu.addAction("修改连接设置");
   menu.addDestructiveAction("清除连接设置");
   menu.addCancelAction("关闭");
@@ -115,10 +116,14 @@ async function showAppMenu() {
 
   if (result === 0) return "preview";
   if (result === 1) {
+    clearCache();
+    return "refresh";
+  }
+  if (result === 2) {
     const didSave = await editConnectionSettings();
     return didSave ? "preview" : "close";
   }
-  if (result === 2) {
+  if (result === 3) {
     clearConnectionSettings();
     await showMessage("已清除", "Worker 地址和 Access Token 已从本机删除。");
   }
@@ -156,6 +161,12 @@ function saveCache(payload) {
   );
 }
 
+function clearCache() {
+  const fm = FileManager.local();
+  const path = cachePath();
+  if (fm.fileExists(path)) fm.remove(path);
+}
+
 function loadCache() {
   const fm = FileManager.local();
   const path = cachePath();
@@ -176,8 +187,14 @@ function loadCache() {
   }
 }
 
-async function fetchStatus() {
-  const req = new Request(RUNTIME_CONFIG.SERVICE_URL);
+async function fetchStatus(options = {}) {
+  let url = RUNTIME_CONFIG.SERVICE_URL;
+  if (options.force) {
+    // Also bypass the Worker-side cache so we get a truly fresh MQTT snapshot.
+    url += url.includes("?") ? "&force=1" : "?force=1";
+  }
+
+  const req = new Request(url);
   req.method = "GET";
   req.headers = {
     "X-Bambu-Token": RUNTIME_CONFIG.BAMBU_TOKEN,
@@ -732,6 +749,8 @@ function buildWidget(payload, options = {}) {
 async function main() {
   let widget;
 
+  let forceRefresh = false;
+
   try {
     if (!config.runsInWidget) {
       const action = await showAppMenu();
@@ -740,11 +759,12 @@ async function main() {
         Script.complete();
         return;
       }
+      if (action === "refresh") forceRefresh = true;
     }
 
     assertConfig();
 
-    const result = await fetchStatus();
+    const result = await fetchStatus({ force: forceRefresh });
     widget = buildWidget(result.payload, result);
   } catch (error) {
     const cached = loadCache();
