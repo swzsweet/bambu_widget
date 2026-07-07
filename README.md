@@ -8,30 +8,33 @@ for a fresh status snapshot, and exposes a small HTTP JSON endpoint for Scriptab
 - `GET /status` or `GET /` - fetch printer status.
 - `GET /status?force=1` - bypass the optional Worker cache.
 - `GET /status?raw=1` - include raw `print` / `info` MQTT payloads for debugging.
+- `GET /status?name=<printer name>` - when the account has several printers, pick one by name.
+- `GET /devices` - list the printers bound to the account (name, serial, online, model). Does not connect to MQTT.
 - `GET /health` - simple health check that does not connect to MQTT.
 
 ## Required configuration
 
-Set these as Worker secrets:
+Set this as a Worker secret — the access token is all you need:
 
 ```bash
-npx wrangler secret put BAMBU_SERIAL
 npx wrangler secret put BAMBU_ACCESS_TOKEN
 ```
 
-The Worker derives the Bambu cloud MQTT username automatically from
-`BAMBU_ACCESS_TOKEN` by calling the Bambu cloud user preference API.
+From the token alone the Worker automatically derives:
 
-Optional compatibility overrides:
+- the **MQTT username** (`u_<uid>`), from the token's JWT `username` claim, falling
+  back to the Bambu cloud user-preference API; and
+- the **printer serial**, from the account's bound-device list (`/devices`). If the
+  account has more than one printer it prefers an online one; pin a specific printer
+  with `BAMBU_SERIAL` or `?name=`.
+
+Optional overrides (only needed if auto-derivation does not fit your setup):
 
 ```bash
-npx wrangler secret put BAMBU_USERNAME
-npx wrangler secret put BAMBU_USER_ID
+npx wrangler secret put BAMBU_SERIAL     # pin a specific printer serial
+npx wrangler secret put BAMBU_USERNAME   # full MQTT username, usually u_<user_id>
+npx wrangler secret put BAMBU_USER_ID    # numeric user id; converted to u_<user_id>
 ```
-
-`BAMBU_USERNAME` should be the full MQTT username, usually `u_<your_user_id>`.
-`BAMBU_USER_ID` can be just the numeric user id; the Worker converts it to
-`u_<your_user_id>`.
 
 Recommended optional secret:
 

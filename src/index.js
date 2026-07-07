@@ -7,12 +7,23 @@ const MAX_TIMEOUT_MS = 20000;
 const DEFAULT_TIMEOUT_MS = 10000;
 const USER_INFO_TIMEOUT_MS = 5000;
 
-// Bambu's cloud API gateway rejects requests without a recognized User-Agent
-// (typically with HTTP 403), so every call must mimic the official client.
+// Bambu's cloud API gateway rejects requests that don't look like the official
+// client (typically HTTP 403), so every call mimics the OrcaSlicer network
+// agent headers. Mirrors greghesp/ha-bambulab (pybambu) and the reference
+// swzsweet/Bambu-print-status-monitoring project.
 const BAMBU_API_HEADERS = {
   "User-Agent": "bambu_network_agent/01.09.05.01",
   "X-BBL-Client-Name": "OrcaSlicer",
   "X-BBL-Client-Type": "slicer",
+  "X-BBL-Client-Version": "01.09.05.51",
+  "X-BBL-Language": "en-US",
+  "X-BBL-OS-Type": "linux",
+  "X-BBL-OS-Version": "6.2.0",
+  "X-BBL-Agent-Version": "01.09.05.01",
+  "X-BBL-Executable-info": "{}",
+  "X-BBL-Agent-OS-Type": "linux",
+  accept: "application/json",
+  "Content-Type": "application/json",
 };
 
 const textEncoder = new TextEncoder();
@@ -29,12 +40,16 @@ export default {
       return json({ ok: true, service: "bambu-widget-worker" });
     }
 
-    if (request.method !== "GET" || !["/", "/status"].includes(url.pathname)) {
+    if (request.method !== "GET" || !["/", "/status", "/devices"].includes(url.pathname)) {
       return json({ ok: false, error: "NOT_FOUND" }, 404);
     }
 
     const authError = validateApiKey(request, env, url);
     if (authError) return authError;
+
+    if (url.pathname === "/devices") {
+      return handleDevices(env, url);
+    }
 
     try {
       const config = await readConfig(env, url);
@@ -64,6 +79,40 @@ export default {
     }
   },
 };
+
+// GET /devices — list the printers bound to the account, so callers can pick a
+// serial (dev_id) without connecting to MQTT.
+async function handleDevices(env, url) {
+  try {
+    const token = normalizeAccessToken(env.BAMBU_ACCESS_TOKEN || env.BAMBU_AUTH_TOKEN || "");
+    if (!token) {
+      throw configError("Missing BAMBU_ACCESS_TOKEN or BAMBU_AUTH_TOKEN.");
+    }
+    const region = (env.BAMBU_REGION || "Global").trim().toLowerCase();
+    const apiBase = (env.BAMBU_API_BASE || defaultApiBase(region)).trim().replace(/\/+$/, "");
+
+    const devices = await fetchDevicesFromBambuCloud(apiBase, token);
+    return json({
+      ok: true,
+      fetchedAt: new Date().toISOString(),
+      count: devices.length,
+      devices: devices.map((d) => ({
+        name: d.name || null,
+        serial: d.dev_id || null,
+        online: Boolean(d.online),
+        model: d.dev_product_name || d.dev_model_name || null,
+        printStatus: d.print_status || null,
+      })),
+    });
+  } catch (error) {
+    return json({
+      ok: false,
+      error: error.code || "DEVICES_ERROR",
+      message: error.message || String(error),
+      fetchedAt: new Date().toISOString(),
+    }, error.statusCode || 502);
+  }
+}
 
 async function fetchPrinterSnapshot(config, includeRaw) {
   const startedAt = Date.now();
@@ -143,18 +192,24 @@ async function fetchPrinterSnapshot(config, includeRaw) {
 }
 
 async function readConfig(env, url) {
-  const serial = requireEnv(env, "BAMBU_SERIAL").trim();
   const password = normalizeAccessToken(env.BAMBU_ACCESS_TOKEN || env.BAMBU_AUTH_TOKEN || "");
   if (!password) {
     throw configError("Missing BAMBU_ACCESS_TOKEN or BAMBU_AUTH_TOKEN. Set it to the raw Bambu accessToken value.");
   }
 
   const region = (env.BAMBU_REGION || "Global").trim().toLowerCase();
+  const apiBase = (env.BAMBU_API_BASE || defaultApiBase(region)).trim().replace(/\/+$/, "");
   const host = (env.BAMBU_MQTT_HOST || defaultMqttHost(region)).trim();
   const port = Number(env.BAMBU_MQTT_PORT || MQTT_PORT);
   const timeoutMs = boundedNumber(url.searchParams.get("timeout") || env.REQUEST_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1000, MAX_TIMEOUT_MS);
   const cacheTtlSeconds = boundedNumber(env.CACHE_TTL_SECONDS, 0, 0, 300);
-  const username = await resolveMqttUsername(env, password, region);
+
+  // The account's device list ("bind") gives us both the serial (dev_id) and,
+  // when needed, is fetched alongside the uid. Only call it if we actually need
+  // the serial, to avoid an extra round-trip when it is configured explicitly.
+  const configuredSerial = (env.BAMBU_SERIAL || url.searchParams.get("serial") || "").trim();
+  const username = await resolveMqttUsername(env, password, apiBase);
+  const serial = configuredSerial || await resolveSerial(apiBase, password, url);
 
   return {
     serial,
@@ -168,18 +223,38 @@ async function readConfig(env, url) {
   };
 }
 
-async function resolveMqttUsername(env, token, region) {
+async function resolveMqttUsername(env, token, apiBase) {
   const configured = env.BAMBU_USERNAME
     ? mqttUsername(env.BAMBU_USERNAME, true)
     : mqttUsername(env.BAMBU_USER_ID || userIdFromJwt(token));
   if (configured) return configured;
 
-  const apiBase = (env.BAMBU_API_BASE || defaultApiBase(region)).trim().replace(/\/+$/, "");
   const uid = await fetchUserIdFromBambuCloud(apiBase, token);
   const username = mqttUsername(uid);
   if (username) return username;
 
   throw configError("Unable to derive Bambu MQTT username from BAMBU_ACCESS_TOKEN. The token may be expired, invalid, or for the wrong BAMBU_REGION.");
+}
+
+// Resolve the printer serial from the account's bound device list when it is
+// not configured. Picks a device matching ?serial=/?name= if given, otherwise
+// prefers an online printer, else the first bound device.
+async function resolveSerial(apiBase, token, url) {
+  const devices = await fetchDevicesFromBambuCloud(apiBase, token);
+  if (!devices.length) {
+    throw configError("No printers are bound to this Bambu account. Set BAMBU_SERIAL explicitly.");
+  }
+
+  const wanted = (url.searchParams.get("name") || "").trim().toLowerCase();
+  const byName = wanted && devices.find((d) => String(d.name || "").toLowerCase() === wanted);
+  const online = devices.find((d) => d.online);
+  const chosen = byName || online || devices[0];
+
+  const serial = String(chosen.dev_id || chosen.dev_serial || "").trim();
+  if (!serial) {
+    throw configError("Bound device did not include a serial (dev_id). Set BAMBU_SERIAL explicitly.");
+  }
+  return serial;
 }
 
 function defaultMqttHost(region) {
@@ -571,7 +646,6 @@ async function fetchUserIdFromBambuCloud(apiBase, token) {
       const response = await fetchWithTimeout(`${apiBase}${endpoint}`, {
         headers: {
           ...BAMBU_API_HEADERS,
-          accept: "application/json",
           authorization: `Bearer ${token}`,
         },
       }, USER_INFO_TIMEOUT_MS);
@@ -592,6 +666,34 @@ async function fetchUserIdFromBambuCloud(apiBase, token) {
   }
 
   throw configError(`Unable to fetch Bambu user id from token. ${lastMessage}`);
+}
+
+// Fetch the account's bound printers. `dev_id` is the serial used for MQTT topics.
+async function fetchDevicesFromBambuCloud(apiBase, token) {
+  const endpoint = "/v1/iot-service/api/user/bind";
+  let response;
+  try {
+    response = await fetchWithTimeout(`${apiBase}${endpoint}`, {
+      headers: {
+        ...BAMBU_API_HEADERS,
+        authorization: `Bearer ${token}`,
+      },
+    }, USER_INFO_TIMEOUT_MS);
+  } catch (error) {
+    throw configError(`Unable to fetch bound devices from Bambu cloud: ${error.message || error}`);
+  }
+
+  const text = await response.text();
+  const data = safeJsonParse(text);
+  if (response.status === 401) {
+    throw configError("Bambu access token is invalid or expired (HTTP 401).");
+  }
+  if (!response.ok) {
+    throw configError(`Device list request returned HTTP ${response.status}.`);
+  }
+
+  const devices = Array.isArray(data?.devices) ? data.devices : [];
+  return devices;
 }
 
 function extractUserId(value) {
