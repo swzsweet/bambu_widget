@@ -7,6 +7,14 @@ const MAX_TIMEOUT_MS = 20000;
 const DEFAULT_TIMEOUT_MS = 10000;
 const USER_INFO_TIMEOUT_MS = 5000;
 
+// Bambu's cloud API gateway rejects requests without a recognized User-Agent
+// (typically with HTTP 403), so every call must mimic the official client.
+const BAMBU_API_HEADERS = {
+  "User-Agent": "bambu_network_agent/01.09.05.01",
+  "X-BBL-Client-Name": "OrcaSlicer",
+  "X-BBL-Client-Type": "slicer",
+};
+
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -136,9 +144,9 @@ async function fetchPrinterSnapshot(config, includeRaw) {
 
 async function readConfig(env, url) {
   const serial = requireEnv(env, "BAMBU_SERIAL").trim();
-  const password = (env.BAMBU_ACCESS_TOKEN || env.BAMBU_AUTH_TOKEN || "").trim();
+  const password = normalizeAccessToken(env.BAMBU_ACCESS_TOKEN || env.BAMBU_AUTH_TOKEN || "");
   if (!password) {
-    throw configError("Missing BAMBU_ACCESS_TOKEN or BAMBU_AUTH_TOKEN.");
+    throw configError("Missing BAMBU_ACCESS_TOKEN or BAMBU_AUTH_TOKEN. Set it to the raw Bambu accessToken value.");
   }
 
   const region = (env.BAMBU_REGION || "Global").trim().toLowerCase();
@@ -528,6 +536,14 @@ function safeJsonParse(text) {
   }
 }
 
+function normalizeAccessToken(rawToken) {
+  const token = String(rawToken || "").trim();
+  if (!token) return "";
+  // Tolerate values pasted as `Bearer <token>` or wrapped in quotes.
+  const withoutBearer = token.replace(/^bearer\s+/i, "").trim();
+  return withoutBearer.replace(/^["']|["']$/g, "").trim();
+}
+
 function userIdFromJwt(token) {
   const parts = String(token).split(".");
   if (parts.length < 2) return null;
@@ -535,7 +551,9 @@ function userIdFromJwt(token) {
     const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
     const payload = JSON.parse(atob(padded));
-    return payload.preferred_username || payload.username || payload.user_name || payload.user_id || payload.uid || payload.sub || null;
+    // Bambu tokens carry the ready-to-use `u_<uid>` string in `username`;
+    // prefer it, then fall back to any numeric-id claim.
+    return payload.username || payload.preferred_username || payload.user_name || payload.user_id || payload.uid || payload.sub || null;
   } catch (_) {
     return null;
   }
@@ -552,6 +570,7 @@ async function fetchUserIdFromBambuCloud(apiBase, token) {
     try {
       const response = await fetchWithTimeout(`${apiBase}${endpoint}`, {
         headers: {
+          ...BAMBU_API_HEADERS,
           accept: "application/json",
           authorization: `Bearer ${token}`,
         },
