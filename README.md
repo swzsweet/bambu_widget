@@ -20,6 +20,10 @@ npx wrangler secret put BAMBU_ACCESS_TOKEN
 npx wrangler secret put BAMBU_USERNAME
 ```
 
+`BAMBU_USERNAME` is the Bambu cloud MQTT username. For Bambu cloud MQTT this is
+usually `u_<your_user_id>`. You can also set `BAMBU_USER_ID` to just the numeric
+user id and the Worker will convert it to `u_<your_user_id>`.
+
 Recommended optional secret:
 
 ```bash

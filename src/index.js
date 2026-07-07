@@ -140,9 +140,9 @@ function readConfig(env, url) {
     throw configError("Missing BAMBU_ACCESS_TOKEN or BAMBU_AUTH_TOKEN.");
   }
 
-  const username = (env.BAMBU_USERNAME || usernameFromJwt(password) || "").trim();
+  const username = mqttUsername(env.BAMBU_USERNAME || env.BAMBU_USER_ID || userIdFromJwt(password));
   if (!username) {
-    throw configError("Missing BAMBU_USERNAME. If the token is a JWT, the worker can infer it from the token `username` claim.");
+    throw configError("Missing BAMBU_USERNAME or BAMBU_USER_ID. For Bambu cloud MQTT, set BAMBU_USERNAME to `u_<your_user_id>` or set BAMBU_USER_ID to the numeric user id.");
   }
 
   const region = (env.BAMBU_REGION || "Global").trim().toLowerCase();
@@ -510,17 +510,25 @@ function safeJsonParse(text) {
   }
 }
 
-function usernameFromJwt(token) {
+function userIdFromJwt(token) {
   const parts = String(token).split(".");
   if (parts.length < 2) return null;
   try {
     const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
     const payload = JSON.parse(atob(padded));
-    return payload.username || payload.user_name || payload.sub || null;
+    return payload.preferred_username || payload.username || payload.user_name || payload.user_id || payload.uid || payload.sub || null;
   } catch (_) {
     return null;
   }
+}
+
+function mqttUsername(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("u_")) return raw;
+  if (/^\d+$/.test(raw)) return `u_${raw}`;
+  return raw;
 }
 
 function sequenceId() {
