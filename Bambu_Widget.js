@@ -388,25 +388,6 @@ function addSymbol(stack, name, size, color) {
   return image;
 }
 
-function addProgressBar(parent, progress, width, height = 10) {
-  const value = Math.max(0, Math.min(100, numberOrNull(progress) ?? 0));
-
-  const track = parent.addStack();
-  track.size = new Size(width, height);
-  track.setPadding(0, 0, 0, 0);
-  track.backgroundColor = new Color("#E6ECE7");
-  track.cornerRadius = height / 2;
-
-  const fill = track.addStack();
-  const fillWidth = value <= 0 ? 0 : Math.max(height, Math.round(width * value / 100));
-  fill.size = new Size(fillWidth, height);
-  fill.backgroundColor = new Color(CONFIG.THEME_GREEN);
-  fill.cornerRadius = height / 2;
-
-  if (fillWidth < width) track.addSpacer();
-  return track;
-}
-
 function addInfoCard(parent, options) {
   const { icon, iconColor, label, value, subtitle } = options;
 
@@ -523,52 +504,15 @@ function buildMediumWidget(payload, options = {}) {
 
   left.addSpacer(6);
 
-  // 大号百分比：数字不变，百分号变小
-  const percentRow = left.addStack();
-  percentRow.size = new Size(114, 38);
-  percentRow.centerAlignContent();
-  percentRow.addSpacer();
+  // 圆环进度（百分比居中），替代原来的横条进度条
+  const ringRow = left.addStack();
+  ringRow.size = new Size(114, 72);
+  ringRow.addSpacer();
+  const ring = ringRow.addImage(drawPercentRingImage(status.progress, 200));
+  ring.imageSize = new Size(72, 72);
+  ringRow.addSpacer();
 
-  const percentStack = percentRow.addStack();
-  percentStack.bottomAlignContent();
-
-  const pValue = numberOrNull(status.progress);
-  const numText = addText(
-    percentStack,
-    pValue === null ? "--" : String(Math.round(pValue)),
-    31,
-    new Color(CONFIG.THEME_GREEN),
-    "bold",
-    true
-  );
-  numText.lineLimit = 1;
-  numText.minimumScaleFactor = 0.72;
-
-  percentStack.addSpacer(1);
-
-  const percentSign = addText(
-    percentStack,
-    "%",
-    15,
-    new Color(CONFIG.THEME_GREEN),
-    "bold",
-    false
-  );
-  percentSign.lineLimit = 1;
-  percentSign.minimumScaleFactor = 0.8;
-
-  percentRow.addSpacer();
-
-  left.addSpacer(6);
-
-  // 进度条更宽更厚，和百分比比例更协调
-  const barRow = left.addStack();
-  barRow.size = new Size(114, 12);
-  barRow.addSpacer();
-  addProgressBar(barRow, status.progress, 106, 10);
-  barRow.addSpacer();
-
-  left.addSpacer(12);
+  left.addSpacer(4);
 
   // 更醒目的预计完成时间（打印成功后隐藏）
   const etaRow = left.addStack();
@@ -696,21 +640,19 @@ function drawSmallRingImage(payload, state) {
 
   // ---- center: big percent (number + smaller %) ----
   const pText = numberOrNull(status.progress) === null ? "--" : String(Math.round(pValue));
-  // Draw "72" and "%" as one visual group, centered on cx.
-  const numFont = Font.boldSystemFont(56);
-  const pctFont = Font.boldSystemFont(22);
-  const numW = measureWidth(pText, 56);
-  const pctW = measureWidth("%", 22);
-  const gap = 3;
-  const groupW = numW + gap + pctW;
-  const groupLeft = cx - groupW / 2;
-  ctx.setFont(numFont);
+  const pctW = 20;
+  const gap = 2;
+  // Anchor the number+% group so it reads centered: right-align the number to
+  // just left of the anchor, put "%" right after it. Independent of digit width.
+  const anchorX = cx + pctW / 2 + 1;
+  ctx.setFont(Font.boldSystemFont(52));
   ctx.setTextColor(dark);
-  ctx.setTextAlignedLeft();
-  ctx.drawTextInRect(pText, new Rect(groupLeft, cy - 52, numW + 4, 66));
-  ctx.setFont(pctFont);
+  ctx.setTextAlignedRight();
+  ctx.drawTextInRect(pText, new Rect(anchorX - 140, cy - 40, 140, 62));
+  ctx.setFont(Font.boldSystemFont(20));
   ctx.setTextColor(gray);
-  ctx.drawTextInRect("%", new Rect(groupLeft + numW + gap, cy - 20, pctW + 4, 30));
+  ctx.setTextAlignedLeft();
+  ctx.drawTextInRect("%", new Rect(anchorX + gap, cy - 12, pctW + 6, 28));
 
   // state dot + label (centered group)
   drawStateLine(ctx, cx, cy + 20, state.title || "", state.textColor);
@@ -739,6 +681,41 @@ function drawSmallRingImage(payload, state) {
   );
   // bottom-right: speed
   drawCorner(ctx, S - pad, S - pad - 40, "速度", formatSpeedShort(status.speedPercent, status.speedLevel), green, "right");
+
+  return ctx.getImage();
+}
+
+// Compact ring with the percentage centered inside — used in the medium
+// widget's left column in place of the old horizontal progress bar.
+function drawPercentRingImage(progress, size = 200) {
+  const ctx = new DrawContext();
+  ctx.size = new Size(size, size);
+  ctx.opaque = false;
+  ctx.respectScreenScale = true;
+
+  const green = new Color(CONFIG.THEME_GREEN);
+  const trackColor = new Color("#E4F3E9");
+  const dark = new Color("#1F2937");
+  const gray = new Color("#AEB6BF");
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const lineWidth = 14;
+  const radius = cx - lineWidth / 2 - 4;
+  const pValue = Math.max(0, Math.min(100, numberOrNull(progress) ?? 0));
+  drawRing(ctx, cx, cy, radius, lineWidth, trackColor, green, pValue / 100);
+
+  const pText = numberOrNull(progress) === null ? "--" : String(Math.round(pValue));
+  const pctW = 22;
+  const anchorX = cx + pctW / 2 + 1;
+  ctx.setFont(Font.boldSystemFont(54));
+  ctx.setTextColor(dark);
+  ctx.setTextAlignedRight();
+  ctx.drawTextInRect(pText, new Rect(anchorX - 150, cy - 40, 150, 64));
+  ctx.setFont(Font.boldSystemFont(22));
+  ctx.setTextColor(gray);
+  ctx.setTextAlignedLeft();
+  ctx.drawTextInRect("%", new Rect(anchorX + 2, cy - 10, pctW + 8, 30));
 
   return ctx.getImage();
 }
