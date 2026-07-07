@@ -275,6 +275,12 @@ function formatTemperature(value) {
   return `${Math.round(n)}°C`;
 }
 
+function formatTempShort(value) {
+  const n = numberOrNull(value);
+  if (n === null) return "--°";
+  return `${Math.round(n)}°`;
+}
+
 function formatPercent(value) {
   const n = numberOrNull(value);
   if (n === null) return "--%";
@@ -309,6 +315,21 @@ function estimateFinishTime(updatedAt, remainingMinutes) {
     minute: "2-digit",
     hour12: false,
   });
+}
+
+function formatRemaining(remainingMinutes) {
+  const remain = numberOrNull(remainingMinutes);
+  if (remain === null || remain < 0) return "--";
+  if (remain < 60) return `${Math.round(remain)}m`;
+  const hours = Math.floor(remain / 60);
+  const mins = Math.round(remain % 60);
+  return mins > 0 ? `${hours}h${mins}m` : `${hours}h`;
+}
+
+function formatSpeedShort(percent, level) {
+  const p = numberOrNull(percent);
+  if (p !== null) return `${Math.round(p)}%`;
+  return speedModeText(level);
 }
 
 function speedModeText(level) {
@@ -646,83 +667,175 @@ function buildMediumWidget(payload, options = {}) {
   return widget;
 }
 
+// Small widget: progress ring with four corner stats and a big centered
+// percentage. Stacks can't draw arcs, so the whole face is rendered as an
+// image via DrawContext and set as the widget background.
+function drawSmallRingImage(payload, state) {
+  const status = payload.status || {};
+
+  const S = 300;               // canvas size (points, rendered @1x here)
+  const ctx = new DrawContext();
+  ctx.size = new Size(S, S);
+  ctx.opaque = false;
+  ctx.respectScreenScale = true;
+
+  const green = new Color(CONFIG.THEME_GREEN);
+  const trackColor = new Color("#E4F3E9");
+  const dark = new Color("#1F2937");
+  const gray = new Color("#AEB6BF");
+  const orange = new Color("#FF7A00");
+  const blue = new Color("#F0A500");
+
+  // ---- progress ring ----
+  const cx = S / 2;
+  const cy = S / 2 + 4;
+  const radius = 98;
+  const lineWidth = 12;
+  const pValue = Math.max(0, Math.min(100, numberOrNull(status.progress) ?? 0));
+  drawRing(ctx, cx, cy, radius, lineWidth, trackColor, green, pValue / 100);
+
+  // ---- center: big percent (number + smaller %) ----
+  const pText = numberOrNull(status.progress) === null ? "--" : String(Math.round(pValue));
+  // Draw "72" and "%" as one visual group, centered on cx.
+  const numFont = Font.boldSystemFont(56);
+  const pctFont = Font.boldSystemFont(22);
+  const numW = measureWidth(pText, 56);
+  const pctW = measureWidth("%", 22);
+  const gap = 3;
+  const groupW = numW + gap + pctW;
+  const groupLeft = cx - groupW / 2;
+  ctx.setFont(numFont);
+  ctx.setTextColor(dark);
+  ctx.setTextAlignedLeft();
+  ctx.drawTextInRect(pText, new Rect(groupLeft, cy - 52, numW + 4, 66));
+  ctx.setFont(pctFont);
+  ctx.setTextColor(gray);
+  ctx.drawTextInRect("%", new Rect(groupLeft + numW + gap, cy - 20, pctW + 4, 30));
+
+  // state dot + label (centered group)
+  drawStateLine(ctx, cx, cy + 20, state.title || "", state.textColor);
+
+  if (!state.finished) {
+    const remainText = `剩余 ${formatRemaining(status.remainingMinutes)}`;
+    ctx.setFont(Font.systemFont(14));
+    ctx.setTextColor(gray);
+    ctx.setTextAlignedCenter();
+    ctx.drawTextInRect(remainText, new Rect(cx - 90, cy + 44, 180, 20));
+  }
+
+  // ---- four corners ----
+  const pad = 26;
+  // top-left: nozzle
+  drawCorner(ctx, pad, pad, "喷嘴", formatTempShort(status.nozzleTemp), orange, "left");
+  // top-right: bed
+  drawCorner(ctx, S - pad, pad, "热床", formatTempShort(status.bedTemp), blue, "right");
+  // bottom-left: layers
+  drawCorner(
+    ctx, pad, S - pad - 40,
+    "层数",
+    `${formatInteger(status.currentLayer)}`,
+    dark, "left",
+    `/${formatInteger(status.totalLayers)}`
+  );
+  // bottom-right: speed
+  drawCorner(ctx, S - pad, S - pad - 40, "速度", formatSpeedShort(status.speedPercent, status.speedLevel), green, "right");
+
+  return ctx.getImage();
+}
+
+function drawRing(ctx, cx, cy, radius, lineWidth, trackColor, fillColor, fraction) {
+  // Track (full circle)
+  const steps = 180;
+  ctx.setLineWidth(lineWidth);
+  strokeArc(ctx, cx, cy, radius, -90, 270, trackColor, lineWidth, steps);
+  // Fill (from top clockwise)
+  const endAngle = -90 + 360 * Math.max(0, Math.min(1, fraction));
+  if (fraction > 0) {
+    strokeArc(ctx, cx, cy, radius, -90, endAngle, fillColor, lineWidth, Math.max(2, Math.round(steps * fraction)));
+  }
+}
+
+// Approximate an arc with a series of filled dots (DrawContext has no arc API).
+function strokeArc(ctx, cx, cy, radius, startDeg, endDeg, color, width, steps) {
+  ctx.setFillColor(color);
+  const total = endDeg - startDeg;
+  const n = Math.max(2, steps);
+  for (let i = 0; i <= n; i += 1) {
+    const deg = startDeg + (total * i) / n;
+    const rad = (deg * Math.PI) / 180;
+    const x = cx + radius * Math.cos(rad);
+    const y = cy + radius * Math.sin(rad);
+    ctx.fillEllipse(new Rect(x - width / 2, y - width / 2, width, width));
+  }
+}
+
+// Rough text-width estimate. CJK glyphs are ~1em wide, ASCII ~0.55em.
+function measureWidth(text, size) {
+  let units = 0;
+  for (const ch of String(text)) {
+    units += /[　-鿿＀-￯]/.test(ch) ? 1 : 0.56;
+  }
+  return units * size;
+}
+
+function drawStateLine(ctx, cx, y, label, color) {
+  // dot + label, centered as a group
+  const fontSize = 15;
+  const dot = 8;
+  const dotGap = 6;
+  const labelW = measureWidth(label, fontSize);
+  const groupW = dot + dotGap + labelW;
+  const startX = cx - groupW / 2;
+  ctx.setFillColor(color);
+  ctx.fillEllipse(new Rect(startX, y + 3, dot, dot));
+  ctx.setFont(Font.semiboldSystemFont(fontSize));
+  ctx.setTextColor(color);
+  ctx.setTextAlignedLeft();
+  ctx.drawTextInRect(label, new Rect(startX + dot + dotGap, y - 3, labelW + 8, 22));
+}
+
+function drawCorner(ctx, x, y, label, value, valueColor, align, faint) {
+  const labelFont = Font.mediumSystemFont(14);
+  const valueFont = Font.boldSystemFont(22);
+  const labelColor = new Color("#8A939C");
+  const w = 120;
+
+  ctx.setFont(labelFont);
+  ctx.setTextColor(labelColor);
+  if (align === "left") {
+    ctx.setTextAlignedLeft();
+    ctx.drawTextInRect(label, new Rect(x, y, w, 18));
+    ctx.setFont(valueFont);
+    ctx.setTextColor(valueColor);
+    ctx.drawTextInRect(value, new Rect(x, y + 18, w, 26));
+    if (faint) {
+      ctx.setFont(Font.mediumSystemFont(13));
+      ctx.setTextColor(new Color("#C7CDD3"));
+      const vw = measureWidth(value, 22) + 3;
+      ctx.drawTextInRect(faint, new Rect(x + vw, y + 26, w, 20));
+    }
+  } else {
+    ctx.setTextAlignedRight();
+    ctx.drawTextInRect(label, new Rect(x - w, y, w, 18));
+    ctx.setFont(valueFont);
+    ctx.setTextColor(valueColor);
+    ctx.drawTextInRect(value, new Rect(x - w, y + 18, w, 26));
+  }
+}
+
 function buildSmallWidget(payload, options = {}) {
-  const printer = payload.printer || {};
   const status = payload.status || {};
   const state = stateInfo(status.gcodeState);
 
   const widget = new ListWidget();
   widget.backgroundColor = new Color("#FFFFFF");
-  widget.setPadding(12, 12, 12, 12);
+  widget.setPadding(0, 0, 0, 0);
   widget.refreshAfterDate = new Date(
     Date.now() + Math.max(5, CONFIG.REFRESH_MINUTES) * 60 * 1000
   );
 
-  const updateAt = options.fromCache
-    ? options.cacheSavedAt
-    : (payload.fetchedAt || status.updatedAt);
-
-  const titleRow = widget.addStack();
-  titleRow.centerAlignContent();
-  const smallName = addText(titleRow, printer.name || CONFIG.WIDGET_TITLE_FALLBACK, 14, new Color("#111827"), "bold");
-  smallName.lineLimit = 1;
-  smallName.minimumScaleFactor = 0.7;
-  titleRow.addSpacer(5);
-  const smallState = addText(titleRow, state.title, 10, state.textColor, "semibold");
-  smallState.lineLimit = 1;
-
-  widget.addSpacer(10);
-
-  const percentRow = widget.addStack();
-  percentRow.centerAlignContent();
-  percentRow.addSpacer();
-
-  const percentStack = percentRow.addStack();
-  percentStack.bottomAlignContent();
-
-  const pValue = numberOrNull(status.progress);
-  addText(
-    percentStack,
-    pValue === null ? "--" : String(Math.round(pValue)),
-    30,
-    new Color(CONFIG.THEME_GREEN),
-    "bold",
-    true
-  );
-  percentStack.addSpacer(1);
-  addText(
-    percentStack,
-    "%",
-    15,
-    new Color(CONFIG.THEME_GREEN),
-    "bold"
-  );
-
-  percentRow.addSpacer();
-
-  widget.addSpacer(8);
-
-  const barWrap = widget.addStack();
-  barWrap.addSpacer();
-  addProgressBar(barWrap, status.progress, 136, 10);
-  barWrap.addSpacer();
-
-  if (!state.finished) {
-    widget.addSpacer(10);
-
-    const etaWrap = widget.addStack();
-    etaWrap.addSpacer();
-    addEtaPill(etaWrap, estimateFinishTime(updateAt, status.remainingMinutes));
-    etaWrap.addSpacer();
-  }
-
-  widget.addSpacer();
-
-  const updateRow = widget.addStack();
-  updateRow.centerAlignContent();
-  addSymbol(updateRow, "clock", 8, new Color("#B0B7BF"));
-  updateRow.addSpacer(3);
-  addText(updateRow, `更新 ${formatClockTime(updateAt)}`, 8.5, new Color("#B0B7BF"), "medium");
+  const image = drawSmallRingImage(payload, state);
+  widget.backgroundImage = image;
 
   return widget;
 }
