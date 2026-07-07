@@ -27,17 +27,17 @@ export default {
     const authError = validateApiKey(request, env, url);
     if (authError) return authError;
 
-    const config = readConfig(env, url);
-    const useCache = Number(config.cacheTtlSeconds) > 0 && url.searchParams.get("force") !== "1";
-    const includeRaw = url.searchParams.get("raw") === "1";
-    const cacheKey = new Request(`https://bambu-widget-worker.local/status/${config.serial}?raw=${includeRaw}`);
-
-    if (useCache) {
-      const cached = await readCache(cacheKey);
-      if (cached) return withCors(cached);
-    }
-
     try {
+      const config = readConfig(env, url);
+      const useCache = Number(config.cacheTtlSeconds) > 0 && url.searchParams.get("force") !== "1";
+      const includeRaw = url.searchParams.get("raw") === "1";
+      const cacheKey = new Request(`https://bambu-widget-worker.local/status/${config.serial}?raw=${includeRaw}`);
+
+      if (useCache) {
+        const cached = await readCache(cacheKey);
+        if (cached) return withCors(cached);
+      }
+
       const snapshot = await fetchPrinterSnapshot(config, includeRaw);
       const response = json(snapshot);
       if (useCache) {
@@ -49,7 +49,7 @@ export default {
       return json({
         ok: false,
         error: error.code || "MQTT_ERROR",
-        message: error.message,
+        message: error.message || String(error),
         fetchedAt: new Date().toISOString(),
       }, status);
     }
