@@ -5,6 +5,7 @@ const MQTT_VERSION_3_1_1 = 4;
 const MQTT_KEEPALIVE_SECONDS = 15;
 const MAX_TIMEOUT_MS = 20000;
 const DEFAULT_TIMEOUT_MS = 10000;
+const USER_INFO_TIMEOUT_MS = 5000;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -28,7 +29,7 @@ export default {
     if (authError) return authError;
 
     try {
-      const config = readConfig(env, url);
+      const config = await readConfig(env, url);
       const useCache = Number(config.cacheTtlSeconds) > 0 && url.searchParams.get("force") !== "1";
       const includeRaw = url.searchParams.get("raw") === "1";
       const cacheKey = new Request(`https://bambu-widget-worker.local/status/${config.serial}?raw=${includeRaw}`);
@@ -133,16 +134,11 @@ async function fetchPrinterSnapshot(config, includeRaw) {
   }
 }
 
-function readConfig(env, url) {
+async function readConfig(env, url) {
   const serial = requireEnv(env, "BAMBU_SERIAL").trim();
   const password = (env.BAMBU_ACCESS_TOKEN || env.BAMBU_AUTH_TOKEN || "").trim();
   if (!password) {
     throw configError("Missing BAMBU_ACCESS_TOKEN or BAMBU_AUTH_TOKEN.");
-  }
-
-  const username = mqttUsername(env.BAMBU_USERNAME || env.BAMBU_USER_ID || userIdFromJwt(password));
-  if (!username) {
-    throw configError("Missing BAMBU_USERNAME or BAMBU_USER_ID. For Bambu cloud MQTT, set BAMBU_USERNAME to `u_<your_user_id>` or set BAMBU_USER_ID to the numeric user id.");
   }
 
   const region = (env.BAMBU_REGION || "Global").trim().toLowerCase();
@@ -150,6 +146,7 @@ function readConfig(env, url) {
   const port = Number(env.BAMBU_MQTT_PORT || MQTT_PORT);
   const timeoutMs = boundedNumber(url.searchParams.get("timeout") || env.REQUEST_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1000, MAX_TIMEOUT_MS);
   const cacheTtlSeconds = boundedNumber(env.CACHE_TTL_SECONDS, 0, 0, 300);
+  const username = await resolveMqttUsername(env, password, region);
 
   return {
     serial,
@@ -163,11 +160,32 @@ function readConfig(env, url) {
   };
 }
 
+async function resolveMqttUsername(env, token, region) {
+  const configured = env.BAMBU_USERNAME
+    ? mqttUsername(env.BAMBU_USERNAME, true)
+    : mqttUsername(env.BAMBU_USER_ID || userIdFromJwt(token));
+  if (configured) return configured;
+
+  const apiBase = (env.BAMBU_API_BASE || defaultApiBase(region)).trim().replace(/\/+$/, "");
+  const uid = await fetchUserIdFromBambuCloud(apiBase, token);
+  const username = mqttUsername(uid);
+  if (username) return username;
+
+  throw configError("Unable to derive Bambu MQTT username from BAMBU_ACCESS_TOKEN. The token may be expired, invalid, or for the wrong BAMBU_REGION.");
+}
+
 function defaultMqttHost(region) {
   if (["cn", "china", "mainland", "mainland_china"].includes(region)) {
     return "cn.mqtt.bambulab.com";
   }
   return "us.mqtt.bambulab.com";
+}
+
+function defaultApiBase(region) {
+  if (["cn", "china", "mainland", "mainland_china"].includes(region)) {
+    return "https://api.bambulab.cn";
+  }
+  return "https://api.bambulab.com";
 }
 
 function requireEnv(env, key) {
@@ -523,12 +541,91 @@ function userIdFromJwt(token) {
   }
 }
 
-function mqttUsername(value) {
+async function fetchUserIdFromBambuCloud(apiBase, token) {
+  const endpoints = [
+    "/v1/design-user-service/my/preference",
+    "/v1/user-service/my/profile",
+  ];
+
+  let lastMessage = "";
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetchWithTimeout(`${apiBase}${endpoint}`, {
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${token}`,
+        },
+      }, USER_INFO_TIMEOUT_MS);
+
+      const text = await response.text();
+      const data = safeJsonParse(text);
+      if (!response.ok) {
+        lastMessage = `${endpoint} returned HTTP ${response.status}`;
+        continue;
+      }
+
+      const uid = extractUserId(data);
+      if (uid) return uid;
+      lastMessage = `${endpoint} did not include uid`;
+    } catch (error) {
+      lastMessage = error.message || String(error);
+    }
+  }
+
+  throw configError(`Unable to fetch Bambu user id from token. ${lastMessage}`);
+}
+
+function extractUserId(value) {
+  const direct = [
+    value?.uid,
+    value?.user_id,
+    value?.userId,
+    value?.data?.uid,
+    value?.data?.user_id,
+    value?.data?.userId,
+    value?.preferred_username,
+    value?.data?.preferred_username,
+  ].find((candidate) => mqttUsername(candidate));
+
+  if (direct) return direct;
+
+  return findUserIdCandidate(value, 0);
+}
+
+function findUserIdCandidate(value, depth) {
+  if (!value || typeof value !== "object" || depth > 4) return null;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (["uid", "user_id", "userId", "preferred_username"].includes(key)) {
+      const username = mqttUsername(child);
+      if (username) return child;
+    }
+  }
+
+  for (const child of Object.values(value)) {
+    const found = findUserIdCandidate(child, depth + 1);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function mqttUsername(value, allowRaw = false) {
   const raw = String(value || "").trim();
   if (!raw) return "";
   if (raw.startsWith("u_")) return raw;
   if (/^\d+$/.test(raw)) return `u_${raw}`;
-  return raw;
+  return allowRaw ? raw : "";
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function sequenceId() {

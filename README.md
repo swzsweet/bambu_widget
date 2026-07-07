@@ -17,12 +17,21 @@ Set these as Worker secrets:
 ```bash
 npx wrangler secret put BAMBU_SERIAL
 npx wrangler secret put BAMBU_ACCESS_TOKEN
-npx wrangler secret put BAMBU_USERNAME
 ```
 
-`BAMBU_USERNAME` is the Bambu cloud MQTT username. For Bambu cloud MQTT this is
-usually `u_<your_user_id>`. You can also set `BAMBU_USER_ID` to just the numeric
-user id and the Worker will convert it to `u_<your_user_id>`.
+The Worker derives the Bambu cloud MQTT username automatically from
+`BAMBU_ACCESS_TOKEN` by calling the Bambu cloud user preference API.
+
+Optional compatibility overrides:
+
+```bash
+npx wrangler secret put BAMBU_USERNAME
+npx wrangler secret put BAMBU_USER_ID
+```
+
+`BAMBU_USERNAME` should be the full MQTT username, usually `u_<your_user_id>`.
+`BAMBU_USER_ID` can be just the numeric user id; the Worker converts it to
+`u_<your_user_id>`.
 
 Recommended optional secret:
 
