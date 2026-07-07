@@ -1,10 +1,13 @@
 // Bambu Lab × Scriptable Widget
-// 左右布局白色风格版 v1.7
+// 左右布局白色风格版 v1.8
 // 修改：
-// 1) 优化左侧百分比与进度条比例
-// 2) 百分比数字大小不变，% 符号缩小
-// 3) 预计完成时间改为更醒目的绿色胶囊样式
-// 4) 更新时间固定显示时间（HH:mm）
+// 1) 鉴权改为拓竹 Access Token，随请求头 X-Bambu-Token 发送
+//    （Worker 不再使用 API_KEY，也不存储 token）
+// 2) 设置界面与 Keychain 键名同步更新为 Access Token
+//
+// 历史 v1.7：
+// - 优化左侧百分比与进度条比例；% 符号缩小
+// - 预计完成时间改为绿色胶囊样式；更新时间显示 HH:mm
 
 const CONFIG = {
   REFRESH_MINUTES: 6,
@@ -15,8 +18,8 @@ const CONFIG = {
 };
 
 const KEYCHAIN_KEYS = {
-  SERVICE_URL: "bambu_mqtt_widget_service_url_v8",
-  WIDGET_API_KEY: "bambu_mqtt_widget_api_key_v8",
+  SERVICE_URL: "bambu_mqtt_widget_service_url_v9",
+  BAMBU_TOKEN: "bambu_mqtt_widget_access_token_v9",
 };
 
 const CACHE_FILE = "bambu-mqtt-widget-cache-v8.json";
@@ -30,8 +33,8 @@ function getSavedConfig() {
     serviceUrl: Keychain.contains(KEYCHAIN_KEYS.SERVICE_URL)
       ? Keychain.get(KEYCHAIN_KEYS.SERVICE_URL)
       : "",
-    widgetApiKey: Keychain.contains(KEYCHAIN_KEYS.WIDGET_API_KEY)
-      ? Keychain.get(KEYCHAIN_KEYS.WIDGET_API_KEY)
+    bambuToken: Keychain.contains(KEYCHAIN_KEYS.BAMBU_TOKEN)
+      ? Keychain.get(KEYCHAIN_KEYS.BAMBU_TOKEN)
       : "",
   };
 }
@@ -63,15 +66,16 @@ async function editConnectionSettings() {
   const alert = new Alert();
   alert.title = "Bambu Widget 设置";
   alert.message =
-    "填写 Cloudflare Worker 地址和访问密钥。\n\n" +
+    "填写 Cloudflare Worker 地址和拓竹 Access Token。\n\n" +
     "只需填写域名，脚本会自动补全 /status。\n" +
-    "密钥仅保存在此 iPhone 的 Keychain 中，不会写入脚本。";
+    "Token 仅保存在此 iPhone 的 Keychain 中，不会写入脚本，\n" +
+    "每次请求由本机发给 Worker，Worker 不存储它。";
 
   alert.addTextField(
     "Worker 地址",
     saved.serviceUrl.replace(/\/status$/, "").replace(/\/api\/bambu-status$/, "")
   );
-  alert.addSecureTextField("API_KEY", saved.widgetApiKey);
+  alert.addSecureTextField("拓竹 Access Token", saved.bambuToken);
 
   alert.addAction("保存");
   alert.addCancelAction("取消");
@@ -81,14 +85,14 @@ async function editConnectionSettings() {
 
   try {
     const serviceUrl = normalizeServiceUrl(alert.textFieldValue(0));
-    const widgetApiKey = String(alert.textFieldValue(1) || "").trim();
+    const bambuToken = String(alert.textFieldValue(1) || "").trim();
 
-    if (!widgetApiKey) {
-      throw new Error("API_KEY 不能为空");
+    if (!bambuToken) {
+      throw new Error("拓竹 Access Token 不能为空");
     }
 
     Keychain.set(KEYCHAIN_KEYS.SERVICE_URL, serviceUrl);
-    Keychain.set(KEYCHAIN_KEYS.WIDGET_API_KEY, widgetApiKey);
+    Keychain.set(KEYCHAIN_KEYS.BAMBU_TOKEN, bambuToken);
     return true;
   } catch (error) {
     await showMessage("保存失败", error.message || String(error));
@@ -105,7 +109,7 @@ function clearConnectionSettings() {
 async function showAppMenu() {
   const saved = getSavedConfig();
 
-  if (!saved.serviceUrl || !saved.widgetApiKey) {
+  if (!saved.serviceUrl || !saved.bambuToken) {
     const didSave = await editConnectionSettings();
     return didSave ? "preview" : "close";
   }
@@ -127,7 +131,7 @@ async function showAppMenu() {
   }
   if (result === 2) {
     clearConnectionSettings();
-    await showMessage("已清除", "Worker 地址和访问密钥已从本机删除。");
+    await showMessage("已清除", "Worker 地址和 Access Token 已从本机删除。");
   }
   return "close";
 }
@@ -135,13 +139,13 @@ async function showAppMenu() {
 function assertConfig() {
   const saved = getSavedConfig();
 
-  if (!saved.serviceUrl || !saved.widgetApiKey) {
+  if (!saved.serviceUrl || !saved.bambuToken) {
     throw new Error("尚未配置接口。请在 Scriptable 中手动运行脚本后完成设置。");
   }
 
   RUNTIME_CONFIG = {
     SERVICE_URL: normalizeServiceUrl(saved.serviceUrl),
-    WIDGET_API_KEY: saved.widgetApiKey,
+    BAMBU_TOKEN: saved.bambuToken,
   };
 }
 
@@ -187,7 +191,7 @@ async function fetchStatus() {
   const req = new Request(RUNTIME_CONFIG.SERVICE_URL);
   req.method = "GET";
   req.headers = {
-    "x-api-key": RUNTIME_CONFIG.WIDGET_API_KEY,
+    "X-Bambu-Token": RUNTIME_CONFIG.BAMBU_TOKEN,
     Accept: "application/json",
   };
   req.timeoutInterval = 25;
