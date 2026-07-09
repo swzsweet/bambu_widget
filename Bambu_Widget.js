@@ -1,5 +1,5 @@
 // 版本号：用于和远程脚本对比、提示更新。修改脚本时请递增。
-const VERSION = "1.9.1";
+const VERSION = "1.10.0";
 // 远程脚本地址（GitHub raw），检查更新时从这里拉取最新版本。
 const REMOTE_SCRIPT_URL =
   "https://raw.githubusercontent.com/swzsweet/bambu_widget/refs/heads/main/Bambu_Widget.js";
@@ -538,29 +538,6 @@ function addInfoCard(parent, options) {
   return card;
 }
 
-function addEtaPill(parent, timeText) {
-  const pill = parent.addStack();
-  pill.centerAlignContent();
-  pill.backgroundColor = new Color("#E8F7EE");
-  pill.cornerRadius = 999;
-  pill.setPadding(5, 10, 5, 10);
-
-  addSymbol(pill, "flag.checkered", 10, new Color(CONFIG.THEME_GREEN_DARK));
-  pill.addSpacer(4);
-
-  const label = addText(
-    pill,
-    `预计完成 ${timeText}`,
-    10,
-    new Color(CONFIG.THEME_GREEN_DARK),
-    "semibold"
-  );
-  label.lineLimit = 1;
-  label.minimumScaleFactor = 0.72;
-
-  return pill;
-}
-
 // -------------------- 布局 --------------------
 
 function buildMediumWidget(payload, options = {}) {
@@ -619,25 +596,18 @@ function buildMediumWidget(payload, options = {}) {
 
   left.addSpacer(6);
 
-  // 圆环进度（百分比居中），替代原来的横条进度条
+  // 圆环进度（百分比居中，预计完成时间在环内上方），替代原来的横条进度条
+  const etaText = state.finished
+    ? null
+    : `预计${estimateFinishTime(updateAt, status.remainingMinutes)}完成`;
   const ringRow = left.addStack();
-  ringRow.size = new Size(114, 72);
+  ringRow.size = new Size(114, 102);
   ringRow.addSpacer();
-  const ring = ringRow.addImage(drawPercentRingImage(status.progress, 200));
-  ring.imageSize = new Size(72, 72);
+  const ring = ringRow.addImage(
+    drawPercentRingImage(status.progress, { etaText })
+  );
+  ring.imageSize = new Size(102, 102);
   ringRow.addSpacer();
-
-  left.addSpacer(4);
-
-  // 更醒目的预计完成时间（打印成功后隐藏）
-  const etaRow = left.addStack();
-  etaRow.size = new Size(114, 24);
-  etaRow.centerAlignContent();
-  etaRow.addSpacer();
-  if (!state.finished) {
-    addEtaPill(etaRow, estimateFinishTime(updateAt, status.remainingMinutes));
-  }
-  etaRow.addSpacer();
 
   left.addSpacer();
 
@@ -732,7 +702,9 @@ function buildMediumWidget(payload, options = {}) {
 function drawSmallRingImage(payload, state) {
   const status = payload.status || {};
 
-  const S = 300;               // canvas size (points, rendered @1x here)
+  // Render at 600 and display at ~158pt: supersampling keeps the arc and text
+  // crisp instead of the soft upscale we got when rendering at 300.
+  const S = 600;
   const ctx = new DrawContext();
   ctx.size = new Size(S, S);
   ctx.opaque = false;
@@ -745,41 +717,46 @@ function drawSmallRingImage(payload, state) {
   const nozzleColor = new Color("#FF5A3C"); // 喷嘴：偏红
   const bedColor = new Color("#F0A500");    // 热床：琥珀色
 
-  // ---- progress ring（缩小半径，给四角留出空间，避免文字压到环上）----
+  // ---- progress ring（放大半径，给四角留出空间，避免文字压到环上）----
   const cx = S / 2;
   const cy = S / 2;
-  const radius = 78;
-  const lineWidth = 12;
+  const radius = 182;
+  const lineWidth = 24;
   const pValue = Math.max(0, Math.min(100, numberOrNull(status.progress) ?? 0));
   drawRing(ctx, cx, cy, radius, lineWidth, trackColor, green, pValue / 100);
 
   // ---- center: 预计完成时间(上) / 大百分比(中) / 状态(下) ----
   if (!state.finished) {
     const etaText = `预计${estimateFinishTime(payload.__updateAt, status.remainingMinutes)}完成`;
-    ctx.setFont(Font.systemFont(13));
+    ctx.setFont(Font.systemFont(26));
     ctx.setTextColor(gray);
     ctx.setTextAlignedCenter();
-    ctx.drawTextInRect(etaText, new Rect(cx - 90, cy - 46, 180, 18));
+    ctx.drawTextInRect(etaText, new Rect(cx - 180, cy - 92, 360, 34));
   }
 
+  // 大百分比：数字 + 小号灰色 %，作为一个整体居中
   const pText = numberOrNull(status.progress) === null ? "--" : String(Math.round(pValue));
-  const pctW = 20;
-  const anchorX = cx + pctW / 2 + 1;
-  ctx.setFont(Font.boldSystemFont(46));
+  const numFont = 92;
+  const pctFont = 38;
+  const gap = 4;
+  const numW = measureWidth(pText, numFont);
+  const pctW = measureWidth("%", pctFont);
+  const startX = cx - (numW + gap + pctW) / 2;
+  ctx.setFont(Font.boldSystemFont(numFont));
   ctx.setTextColor(dark);
-  ctx.setTextAlignedRight();
-  ctx.drawTextInRect(pText, new Rect(anchorX - 150, cy - 30, 150, 54));
-  ctx.setFont(Font.boldSystemFont(19));
+  ctx.setTextAlignedLeft();
+  ctx.drawTextInRect(pText, new Rect(startX, cy - 58, numW + 20, 84));
+  ctx.setFont(Font.boldSystemFont(pctFont));
   ctx.setTextColor(gray);
   ctx.setTextAlignedLeft();
-  ctx.drawTextInRect("%", new Rect(anchorX + 2, cy - 4, pctW + 8, 26));
+  ctx.drawTextInRect("%", new Rect(startX + numW + gap, cy - 8, pctW + 12, 44));
 
-  drawStateLine(ctx, cx, cy + 26, state.title || "", state.textColor);
+  drawStateLine(ctx, cx, cy + 52, state.title || "", state.textColor, 28);
 
   // ---- four corners（固定在四角，留足内边距，远离圆环）----
-  const padX = 18;
-  const topY = 20;
-  const botY = S - 62;
+  const padX = 36;
+  const topY = 40;
+  const botY = S - 124;
   drawCornerStat(ctx, padX, topY, "left", "喷嘴", formatTempShort(status.nozzleTemp), nozzleColor);
   drawCornerStat(ctx, S - padX, topY, "right", "热床", formatTempShort(status.bedTemp), bedColor);
   drawCornerStat(
@@ -796,9 +773,12 @@ function drawSmallRingImage(payload, state) {
   return ctx.getImage();
 }
 
-// Compact ring with the percentage centered inside — used in the medium
-// widget's left column in place of the old horizontal progress bar.
-function drawPercentRingImage(progress, size = 200) {
+// Ring for the medium widget's left column: ETA (small gray) above the big
+// centered percentage, with the print state below — all inside the ring, so
+// no separate ETA pill is needed and the ring can be larger. Rendered at a
+// supersampled size and displayed smaller so the arc and text stay crisp.
+function drawPercentRingImage(progress, options = {}) {
+  const size = 240;
   const ctx = new DrawContext();
   ctx.size = new Size(size, size);
   ctx.opaque = false;
@@ -811,22 +791,44 @@ function drawPercentRingImage(progress, size = 200) {
 
   const cx = size / 2;
   const cy = size / 2;
-  const lineWidth = 14;
+  const lineWidth = 18;
   const radius = cx - lineWidth / 2 - 4;
   const pValue = Math.max(0, Math.min(100, numberOrNull(progress) ?? 0));
   drawRing(ctx, cx, cy, radius, lineWidth, trackColor, green, pValue / 100);
 
+  // The state is already shown in the widget's title row, so inside the ring
+  // we only stack the ETA (small gray, top) and the big centered percentage.
+  const hasEta = !!options.etaText;
+  const numFont = 84;
+  const pctFont = 34;
+
+  if (hasEta) {
+    ctx.setFont(Font.systemFont(26));
+    ctx.setTextColor(gray);
+    ctx.setTextAlignedCenter();
+    ctx.drawTextInRect(options.etaText, new Rect(cx - 100, cy - 56, 200, 30));
+  }
+
+  // Big percentage, centered as a "NN%" group (number + small gray %). When
+  // there's no ETA the group sits dead-center; otherwise it drops slightly to
+  // make room for the ETA line above.
   const pText = numberOrNull(progress) === null ? "--" : String(Math.round(pValue));
-  const pctW = 22;
-  const anchorX = cx + pctW / 2 + 1;
-  ctx.setFont(Font.boldSystemFont(54));
+  const gap = 4;
+  const numW = measureWidth(pText, numFont);
+  const pctW = measureWidth("%", pctFont);
+  const groupW = numW + gap + pctW;
+  const startX = cx - groupW / 2;
+  const numTop = hasEta ? cy - 26 : cy - 42;
+
+  ctx.setFont(Font.boldSystemFont(numFont));
   ctx.setTextColor(dark);
-  ctx.setTextAlignedRight();
-  ctx.drawTextInRect(pText, new Rect(anchorX - 150, cy - 40, 150, 64));
-  ctx.setFont(Font.boldSystemFont(22));
+  ctx.setTextAlignedLeft();
+  ctx.drawTextInRect(pText, new Rect(startX, numTop, numW + 20, 74));
+
+  ctx.setFont(Font.boldSystemFont(pctFont));
   ctx.setTextColor(gray);
   ctx.setTextAlignedLeft();
-  ctx.drawTextInRect("%", new Rect(anchorX + 2, cy - 10, pctW + 8, 30));
+  ctx.drawTextInRect("%", new Rect(startX + numW + gap, numTop + 40, pctW + 10, 40));
 
   return ctx.getImage();
 }
@@ -857,70 +859,85 @@ function strokeArc(ctx, cx, cy, radius, startDeg, endDeg, color, width, steps) {
   }
 }
 
-// Rough text-width estimate. CJK glyphs are ~1em wide, ASCII ~0.55em.
+// Text-width estimate. Per-glyph em ratios measured against PingFang SC so
+// the values match the real rendered widths (the old flat 0.56 for ASCII
+// badly under-measured "%" and digits, which let corner suffixes overlap the
+// value text). CJK glyphs are ~1em wide.
 function measureWidth(text, size) {
   let units = 0;
   for (const ch of String(text)) {
-    units += /[　-鿿＀-￯]/.test(ch) ? 1 : 0.56;
+    if (/[　-鿿＀-￯]/.test(ch)) units += 1; // CJK
+    else if (ch >= "0" && ch <= "9") units += 0.6;
+    else if (ch === "%") units += 0.955;
+    else if (ch === " ") units += 0.333;
+    else if (ch === "." || ch === ":") units += 0.258;
+    else if (ch === "/") units += 0.5;
+    else if (ch === "°") units += 0.328;
+    else if (ch === "-") units += 0.605;
+    else if (ch === "m") units += 0.838;
+    else units += 0.56;
   }
   return units * size;
 }
 
-function drawStateLine(ctx, cx, y, label, color) {
+function drawStateLine(ctx, cx, y, label, color, fontSize = 14) {
   // dot + label, centered as a group
-  const fontSize = 14;
-  const dot = 7;
-  const dotGap = 5;
+  const dot = fontSize * 0.5;
+  const dotGap = fontSize * 0.36;
   const labelW = measureWidth(label, fontSize);
   const groupW = dot + dotGap + labelW;
   const startX = cx - groupW / 2;
   ctx.setFillColor(color);
-  ctx.fillEllipse(new Rect(startX, y + 3, dot, dot));
+  ctx.fillEllipse(new Rect(startX, y + fontSize * 0.22, dot, dot));
   ctx.setFont(Font.semiboldSystemFont(fontSize));
   ctx.setTextColor(color);
   ctx.setTextAlignedLeft();
-  ctx.drawTextInRect(label, new Rect(startX + dot + dotGap, y, labelW + 10, 20));
+  ctx.drawTextInRect(label, new Rect(startX + dot + dotGap, y, labelW + fontSize, fontSize * 1.5));
 }
 
 // Corner stat: small gray label on top, larger colored value below, with an
 // optional faint suffix (total layers, speed mode). `x` is the outer anchor;
 // left-aligned for the two left corners, right-aligned for the right corners.
+// Sizes are tuned for the 600pt small-widget canvas.
 function drawCornerStat(ctx, x, y, align, label, value, valueColor, faint) {
   const labelColor = new Color("#8A939C");
   const faintColor = new Color("#C7CDD3");
-  const w = 120;
-  const valueSize = 20;
+  const w = 240;
+  const labelSize = 24;
+  const valueSize = 40;
+  const valueY = y + labelSize + 6;
+  const faintY = y + labelSize + 18;
 
-  ctx.setFont(Font.mediumSystemFont(12));
+  ctx.setFont(Font.mediumSystemFont(labelSize));
   ctx.setTextColor(labelColor);
   if (align === "left") {
     ctx.setTextAlignedLeft();
-    ctx.drawTextInRect(label, new Rect(x, y, w, 16));
+    ctx.drawTextInRect(label, new Rect(x, y, w, labelSize + 4));
 
     ctx.setFont(Font.boldSystemFont(valueSize));
     ctx.setTextColor(valueColor);
-    ctx.drawTextInRect(value, new Rect(x, y + 16, w, 26));
+    ctx.drawTextInRect(value, new Rect(x, valueY, w, valueSize + 6));
 
     if (faint) {
-      const vw = measureWidth(value, valueSize) + 3;
-      ctx.setFont(Font.mediumSystemFont(12));
+      const vw = measureWidth(value, valueSize) + 6;
+      ctx.setFont(Font.mediumSystemFont(labelSize));
       ctx.setTextColor(faintColor);
-      ctx.drawTextInRect(faint, new Rect(x + vw, y + 22, w, 18));
+      ctx.drawTextInRect(faint, new Rect(x + vw, faintY, w, labelSize + 4));
     }
   } else {
     ctx.setTextAlignedRight();
-    ctx.drawTextInRect(label, new Rect(x - w, y, w, 16));
+    ctx.drawTextInRect(label, new Rect(x - w, y, w, labelSize + 4));
 
     ctx.setFont(Font.boldSystemFont(valueSize));
     ctx.setTextColor(valueColor);
-    ctx.drawTextInRect(value, new Rect(x - w, y + 16, w, 26));
+    ctx.drawTextInRect(value, new Rect(x - w, valueY, w, valueSize + 6));
 
     if (faint) {
-      ctx.setFont(Font.mediumSystemFont(12));
+      ctx.setFont(Font.mediumSystemFont(labelSize));
       ctx.setTextColor(faintColor);
       ctx.setTextAlignedRight();
-      const vw = measureWidth(value, valueSize) + 3;
-      ctx.drawTextInRect(faint, new Rect(x - w, y + 22, w - vw, 18));
+      const vw = measureWidth(value, valueSize) + 6;
+      ctx.drawTextInRect(faint, new Rect(x - w, faintY, w - vw, labelSize + 4));
     }
   }
 }
